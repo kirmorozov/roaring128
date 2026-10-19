@@ -82,18 +82,26 @@ unsafe fn popcount_sum(mut f: impl FnMut(usize) -> __m512i) -> u32 {
 #[inline(always)]
 unsafe fn op_store_card<const OP: u8>(a: *const u64, b: *const u64, out: *mut u64) -> u32 {
     unsafe {
-        popcount_sum(|i| {
-            let w = op512::<OP>(load(a, i), load(b, i));
-            store(out, i, w);
-            w
-        })
+        popcount_sum(
+            #[inline(always)]
+            |i| {
+                let w = op512::<OP>(load(a, i), load(b, i));
+                store(out, i, w);
+                w
+            },
+        )
     }
 }
 
 #[inline(always)]
 unsafe fn op_card<const OP: u8>(a: &Words, b: &Words) -> u32 {
     let (a, b) = (a.as_ptr(), b.as_ptr());
-    unsafe { popcount_sum(|i| op512::<OP>(load(a, i), load(b, i))) }
+    unsafe {
+        popcount_sum(
+            #[inline(always)]
+            |i| op512::<OP>(load(a, i), load(b, i)),
+        )
+    }
 }
 
 #[inline(always)]
@@ -199,7 +207,7 @@ impl Lanes for Avx512Lanes {
 kernels! {
     fn bitmap_popcount(a: &Words) -> u32 {
         let p = a.as_ptr();
-        unsafe { popcount_sum(|i| load(p, i)) }
+        unsafe { popcount_sum(#[inline(always)] |i| load(p, i)) }
     }
 
     fn bitmap_op(op: BitOp, a: &Words, b: &Words, out: &mut Words) -> u32 {
@@ -282,7 +290,7 @@ kernels! {
     fn bitmap_count_runs(a: &Words) -> u32 {
         let p = a.as_ptr();
         unsafe {
-            popcount_sum(|i| {
+            popcount_sum(#[inline(always)] |i| {
                 let v = load(p, i);
                 // The word preceding each lane; zero before the first word.
                 let prev = if i == 0 {

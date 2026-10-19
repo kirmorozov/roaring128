@@ -140,18 +140,26 @@ unsafe fn op256<const OP: u8>(a: __m256i, b: __m256i) -> __m256i {
 #[inline(always)]
 unsafe fn op_store_card<const OP: u8>(a: *const u64, b: *const u64, out: *mut u64) -> u32 {
     unsafe {
-        harley_seal(|i| {
-            let w = op256::<OP>(load(a, i), load(b, i));
-            store(out, i, w);
-            w
-        })
+        harley_seal(
+            #[inline(always)]
+            |i| {
+                let w = op256::<OP>(load(a, i), load(b, i));
+                store(out, i, w);
+                w
+            },
+        )
     }
 }
 
 #[inline(always)]
 unsafe fn op_card<const OP: u8>(a: &Words, b: &Words) -> u32 {
     let (a, b) = (a.as_ptr(), b.as_ptr());
-    unsafe { harley_seal(|i| op256::<OP>(load(a, i), load(b, i))) }
+    unsafe {
+        harley_seal(
+            #[inline(always)]
+            |i| op256::<OP>(load(a, i), load(b, i)),
+        )
+    }
 }
 
 #[inline(always)]
@@ -297,7 +305,7 @@ impl Lanes for Avx2Lanes {
 kernels! {
     fn bitmap_popcount(a: &Words) -> u32 {
         let p = a.as_ptr();
-        unsafe { harley_seal(|i| load(p, i)) }
+        unsafe { harley_seal(#[inline(always)] |i| load(p, i)) }
     }
 
     fn bitmap_op(op: BitOp, a: &Words, b: &Words, out: &mut Words) -> u32 {
@@ -317,11 +325,11 @@ kernels! {
     }
 
     fn bitmap_intersects(a: &Words, b: &Words) -> bool {
-        unsafe { any_block(a, b, |x, y| _mm256_and_si256(x, y)) }
+        unsafe { any_block(a, b, #[inline(always)] |x, y| _mm256_and_si256(x, y)) }
     }
 
     fn bitmap_is_subset(a: &Words, b: &Words) -> bool {
-        unsafe { !any_block(a, b, |x, y| _mm256_andnot_si256(y, x)) }
+        unsafe { !any_block(a, b, #[inline(always)] |x, y| _mm256_andnot_si256(y, x)) }
     }
 
     fn bitmap_to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
@@ -373,7 +381,7 @@ kernels! {
     fn bitmap_count_runs(a: &Words) -> u32 {
         let p = a.as_ptr();
         unsafe {
-            harley_seal(|i| {
+            harley_seal(#[inline(always)] |i| {
                 let v = load(p, i);
                 // The word preceding each lane; zero before the first word.
                 let prev = if i == 0 {

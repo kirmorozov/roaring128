@@ -256,12 +256,17 @@ pub(super) fn intersect_search(
 ) -> usize {
     debug_assert!(out.len() >= small.len());
     let mut k = 0;
-    search_each(small, large, |v, p| {
-        // `k` <= index of `v` in `small` < `out.len()`.
-        out[k].write(v);
-        k += found_at(large, p, v) as usize;
-        true
-    });
+    search_each(
+        small,
+        large,
+        #[inline(always)]
+        |v, p| {
+            // `k` <= index of `v` in `small` < `out.len()`.
+            out[k].write(v);
+            k += found_at(large, p, v) as usize;
+            true
+        },
+    );
     k
 }
 
@@ -269,11 +274,16 @@ pub(super) fn intersect_search(
 #[inline(always)]
 pub(super) fn difference_search_small(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     let mut k = 0;
-    search_each(a, b, |v, p| {
-        out[k].write(v);
-        k += !found_at(b, p, v) as usize;
-        true
-    });
+    search_each(
+        a,
+        b,
+        #[inline(always)]
+        |v, p| {
+            out[k].write(v);
+            k += !found_at(b, p, v) as usize;
+            true
+        },
+    );
     k
 }
 
@@ -281,11 +291,16 @@ pub(super) fn difference_search_small(a: &[u16], b: &[u16], out: &mut [MaybeUnin
 #[inline(always)]
 pub(super) fn difference_search_large(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     let (mut k, mut i) = (0, 0);
-    search_each(b, a, |v, p| {
-        k = copy_tail(&a[i..p], out, k);
-        i = p + found_at(a, p, v) as usize;
-        true
-    });
+    search_each(
+        b,
+        a,
+        #[inline(always)]
+        |v, p| {
+            k = copy_tail(&a[i..p], out, k);
+            i = p + found_at(a, p, v) as usize;
+            true
+        },
+    );
     copy_tail(&a[i..], out, k)
 }
 
@@ -298,16 +313,21 @@ pub(super) fn merge_search<const XOR: bool>(
     out: &mut [MaybeUninit<u16>],
 ) -> usize {
     let (mut k, mut j) = (0, 0);
-    search_each(small, large, |v, p| {
-        k = copy_tail(&large[j..p], out, k);
-        let found = found_at(large, p, v);
-        j = p + found as usize;
-        if !(XOR && found) {
-            out[k].write(v);
-            k += 1;
-        }
-        true
-    });
+    search_each(
+        small,
+        large,
+        #[inline(always)]
+        |v, p| {
+            k = copy_tail(&large[j..p], out, k);
+            let found = found_at(large, p, v);
+            j = p + found as usize;
+            if !(XOR && found) {
+                out[k].write(v);
+                k += 1;
+            }
+            true
+        },
+    );
     copy_tail(&large[j..], out, k)
 }
 
@@ -389,10 +409,15 @@ pub(crate) unsafe fn intersect_card<L: Lanes>(a: &[u16], b: &[u16]) -> usize {
     }
     if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
         let mut k = 0;
-        search_each(small, large, |v, p| {
-            k += found_at(large, p, v) as usize;
-            true
-        });
+        search_each(
+            small,
+            large,
+            #[inline(always)]
+            |v, p| {
+                k += found_at(large, p, v) as usize;
+                true
+            },
+        );
         return k;
     }
     let (mut a, mut b) = (a, b);
@@ -423,10 +448,15 @@ pub(crate) unsafe fn intersects<L: Lanes>(a: &[u16], b: &[u16]) -> bool {
     }
     if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
         let mut any = false;
-        search_each(small, large, |v, p| {
-            any = found_at(large, p, v);
-            !any
-        });
+        search_each(
+            small,
+            large,
+            #[inline(always)]
+            |v, p| {
+                any = found_at(large, p, v);
+                !any
+            },
+        );
         return any;
     }
     let (mut a, mut b) = (a, b);
@@ -785,10 +815,15 @@ pub(crate) unsafe fn union_blocks<L: Lanes>(
         let mut k = 0;
         // Every emitted vector holds values of fully loaded blocks with at least eight loaded
         // values still pending, so the eight lane store stays within `a.len() + b.len()`.
-        let (i, j, prev, hi) = merge_blocks(a, b, |prev, cur| {
-            debug_assert!(k + 8 <= cap);
-            k += store_unique::<L>(prev, cur, dst.add(k));
-        });
+        let (i, j, prev, hi) = merge_blocks(
+            a,
+            b,
+            #[inline(always)]
+            |prev, cur| {
+                debug_assert!(k + 8 <= cap);
+                k += store_unique::<L>(prev, cur, dst.add(k));
+            },
+        );
         let mut buf = [0u16; 24];
         let (n, long) = pending(a, b, i, j, &[], hi, &mut buf);
         let last = lanes_of(prev)[7];
@@ -816,10 +851,15 @@ pub(crate) unsafe fn xor_blocks<L: Lanes>(
     unsafe {
         let (cap, dst) = (out.len(), out.as_mut_ptr().cast::<u16>());
         let mut k = 0;
-        let (i, j, prev, hi) = merge_blocks(a, b, |prev, cur| {
-            debug_assert!(k + 8 <= cap);
-            k += store_xor::<L>(prev, cur, dst.add(k));
-        });
+        let (i, j, prev, hi) = merge_blocks(
+            a,
+            b,
+            #[inline(always)]
+            |prev, cur| {
+                debug_assert!(k + 8 <= cap);
+                k += store_xor::<L>(prev, cur, dst.add(k));
+            },
+        );
         // `prev[7]` is still undecided; `prev[6]` is its (decided) left neighbour.
         let lanes = lanes_of(prev);
         let mut buf = [0u16; 24];
