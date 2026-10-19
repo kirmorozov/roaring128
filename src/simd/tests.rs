@@ -4,6 +4,7 @@
 //! kernel that writes past its bound corrupts the guard and fails the test.
 
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::mem::MaybeUninit;
 
 use super::*;
