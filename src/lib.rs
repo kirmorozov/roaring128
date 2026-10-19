@@ -8,13 +8,18 @@
 //! the Roaring specification, so the behaviour and the API mirror the
 //! [`roaring`](https://docs.rs/roaring) crate (`RoaringBitmap` / `RoaringTreemap`).
 //!
-//! Hot loops are vectorized with hand written kernels selected at runtime:
+//! Hot loops are vectorized, and there is deliberately no fallback for older CPUs:
 //!
-//! * `x86_64`: AVX-512 (F/BW/VL/VPOPCNTDQ/VBMI2), AVX2 and SSE4.2 code paths,
-//! * `aarch64`: NEON code paths,
-//! * a portable scalar fallback everywhere else.
+//! * `x86_64`: AVX2 + BMI1/BMI2 + POPCNT is the minimum (`x86-64-v3`: Intel Haswell / AMD Zen
+//!   or newer). AVX-512 F/BW/VL/DQ/VPOPCNTDQ/BITALG/VBMI2 (Intel Ice Lake, AMD Zen 4 and newer)
+//!   is used automatically when present. On a CPU without AVX2 the first use of a bitmap panics.
+//! * `aarch64`: NEON.
+//! * Other architectures are rejected at compile time.
 //!
-//! [`simd_backend`] reports which code path is used on the running machine.
+//! With the `std` feature the backend is detected at runtime; without it, it is chosen from the
+//! target features enabled at compile time (see [`SimdBackend`]). The portable scalar code is
+//! only the reference implementation the vector kernels are tested against; it is never selected
+//! as a backend. [`simd_backend`] reports which code path is used on the running machine.
 //!
 //! Sparse data (such as random UUIDs, where virtually every value owns a container) is handled
 //! without per-value heap allocations: small array containers are stored inline in the 16-byte

@@ -39,7 +39,9 @@ pub(crate) type Words = [u64; BITMAP_WORDS];
 /// The backend is detected once, on first use. On `x86_64` with the `std` feature the detection
 /// is done at runtime, so a single binary uses AVX-512 on machines that support it and AVX2
 /// elsewhere. Without `std` the backend is chosen from the target features enabled at compile
-/// time (for example with `-C target-cpu=x86-64-v4`).
+/// time: build with at least `-C target-cpu=x86-64-v3`. The AVX-512 backend additionally needs
+/// AVX-512 VPOPCNTDQ, BITALG and VBMI2, which `x86-64-v4` does not include; use for example
+/// `-C target-cpu=icelake-server` or `-C target-cpu=znver4`.
 ///
 /// For testing, the `ROARING128_FORCE_BACKEND` environment variable (`avx2`, `avx512` or `neon`)
 /// can downgrade the selection. Requests for a backend that the CPU does not support are ignored.

@@ -23,6 +23,9 @@ Cargo.lock.orig
 # rustc will dump stack traces when hitting an internal compiler error to PWD
 rustc-ice-*.txt
 
+# CI backend probe: lockfile is regenerated on every run (path dependency only)
+/.github/ci/backend-probe/Cargo.lock
+
 # Claude Code agent worktrees and local settings - never commit
 /.claude/
 
