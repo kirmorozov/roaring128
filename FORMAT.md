@@ -46,27 +46,36 @@ container after reading the header, which is what
 A serialized bitmap is valid if and only if all of the following hold:
 
 1. The cookie is `0x3831_5252` and only bit 0 of the flags may be set.
-2. If the run bitset is present, its padding bits (bits `n % 8 ..= 7` of the last byte when
-   `n` is not a multiple of 8) are zero. Writers only emit the bitset when at least one
-   container is a run, but a bitset without any run bit set is valid.
+2. Flags bit 0 and the run bitset: writers set bit 0 (and emit the bitset) only when at least
+   one container is a run. Readers also accept bit 0 with a bitset in which no container is
+   marked as a run. The padding bits of the bitset (bits `n % 8 ..= 7` of its last byte when
+   `n` is not a multiple of 8) must be zero.
 3. Keys are strictly increasing (so no key is repeated).
 4. Array payloads (`cardinality <= 4096`, not a run) are strictly increasing.
 5. Bitmap payloads (`cardinality > 4096`, not a run) have exactly `cardinality` bits set.
 6. Every run satisfies `start + (length - 1) <= 0xFFFF`; runs are sorted, non overlapping and
    non adjacent (`start` of a run is greater than `end + 1` of the previous one).
 7. The total cardinality (the sum over all containers) fits in a `u64`.
+8. The input holds every byte announced by the header and the descriptors (no truncation).
 
-The input may continue after the last payload: readers stop there and leave the rest unread.
+## Readers
 
-`deserialize_from` checks every rule and never allocates more than a small constant factor of
-what the input actually provides, whatever the announced container count.
+All readers start at the current position of their reader. The input may continue after the
+last payload: readers stop there and leave the rest unread. Errors are reported as
+`io::Error`s (`UnexpectedEof` for truncated input, `InvalidData` for broken rules); no input
+makes a reader panic, and none of them allocates more than a small constant factor of what the
+input actually provides, whatever the announced container count.
 
-`deserialize_unchecked_from` is meant for trusted input. It still checks rules 1, 3, 6 (only the
-bound of each run) and 7, which keep the in-memory index consistent, but not rule 2 nor the
-contents of the containers (rules 4, 5 and the ordering part of 6). Invalid contents yield an
-invalid bitmap, never undefined behaviour; debug builds may panic on them.
-
-`intersection_with_serialized_unchecked` checks rule 1, stops reading descriptors (read in
-chunks of 4096) once the in-memory operand has no greater key, and reads only the payloads of the
-containers whose keys the in-memory operand has. Its reader needs `Seek`; seeks are relative to
-the position where the serialized bitmap starts.
+* `deserialize_from` checks every rule.
+* `deserialize_unchecked_from` is meant for trusted input and skips the two checks that cost
+  more than reading the data: the bitmap cardinality (rule 5, the announced cardinality is
+  trusted) and the padding bits of the run bitset (part of rule 2). A bitmap payload that does
+  not match its cardinality yields an invalid bitmap (in release and debug builds alike, never a
+  panic nor undefined behaviour). Every other rule is checked, in particular truncation, the
+  cookie and the flags.
+* `intersection_with_serialized_unchecked` needs `Seek` in addition; all seeks are relative to
+  the position where the serialized bitmap starts. It checks rule 1 and reads the descriptors
+  (in chunks of 4096) only until the in-memory operand has no greater key, then reads only the
+  payloads of the containers whose keys the in-memory operand has; those payloads are fully
+  validated (rules 4 to 6). Truncation inside the data it reads is an error; truncation past
+  the last byte it needs is not detected.

@@ -148,9 +148,13 @@ impl PayloadReader {
         }
     }
 
-    /// Reads one container payload. `validate` checks the container contents (sorted arrays,
-    /// bitmap cardinalities, well-formed runs); the run lengths are always checked so that no
-    /// interval can end past index `0xFFFF`.
+    /// Reads one container payload.
+    ///
+    /// Array order and run well-formedness are always checked (linear and cheap): the stores
+    /// built from them must be valid, otherwise the container layer could misbehave, and its
+    /// unchecked constructors assert validity in debug builds. `validate` adds the bitmap
+    /// cardinality check (a popcount of 8 KiB); without it the announced cardinality is trusted,
+    /// which yields an invalid bitmap on corrupt input, never a panic.
     pub(crate) fn read<R: io::Read>(
         &mut self,
         reader: &mut R,
@@ -171,11 +175,7 @@ impl PayloadReader {
                     .ok_or_else(|| invalid_data("run ends past the end of its container"))?;
                 self.intervals.push(Interval::new_unchecked(start, end));
             }
-            let store = if validate {
-                RunStore::try_from_intervals(&self.intervals).map_err(invalid_data)?
-            } else {
-                RunStore::from_intervals_unchecked(&self.intervals)
-            };
+            let store = RunStore::try_from_intervals(&self.intervals).map_err(invalid_data)?;
             Ok(Container::Run(store))
         } else if n as u64 <= ARRAY_LIMIT {
             self.bytes.resize(2 * n, 0);
@@ -188,11 +188,7 @@ impl PayloadReader {
                     .iter()
                     .map(|&v| u16::from_le_bytes(v)),
             );
-            let store = if validate {
-                ArrayStore::try_from_sorted(&self.values).map_err(invalid_data)?
-            } else {
-                ArrayStore::from_sorted_unchecked(&self.values)
-            };
+            let store = ArrayStore::try_from_sorted(&self.values).map_err(invalid_data)?;
             Ok(Container::Array(store))
         } else {
             // `n > ARRAY_LIMIT`, so the store is a valid bitmap container once its cardinality
