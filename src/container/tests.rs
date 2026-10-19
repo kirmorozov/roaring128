@@ -1155,3 +1155,46 @@ fn run_from_range_matches_roaring() {
         assert_same_as_roaring(&c, &rb);
     }
 }
+
+/// The `optimize` decisions that keep an array or a bitmap (no run container involved) match
+/// the `roaring` crate. The conversions to runs are covered by `run_optimize_matches_roaring`.
+#[test]
+fn optimize_keeping_the_representation_matches_roaring() {
+    let mut rng = Rng::new(0x000E);
+    let mut kept = 0;
+    for _ in 0..cases(400) {
+        let model = random_model(&mut rng);
+        let mut rb = roaring_of(&model);
+        if rb.optimize() {
+            continue;
+        }
+        kept += 1;
+        let mut c = Container::from_sorted_unchecked(&model.iter().copied().collect::<Vec<_>>());
+        assert!(!c.optimize(), "{c:?}");
+        assert_same_as_roaring(&c, &rb);
+        assert!(!c.remove_run_compression());
+        check(&c, &model);
+    }
+    assert!(kept > 0);
+}
+
+#[test]
+fn ensure_correct_store_converts() {
+    let values: Vec<u16> = (0..5000).map(|v| v * 13).collect();
+    let mut model: Model = values.iter().copied().collect();
+    let mut c = Container::Array(ArrayStore::heap_from_slice(&values));
+    assert!(c.ensure_correct_store());
+    assert_eq!(c.kind(), Kind::Bitmap);
+    check(&c, &model);
+    assert!(!c.ensure_correct_store());
+    let mut c = Container::Bitmap(BitmapStore::from_sorted_unchecked(&values[..4096]));
+    model = values[..4096].iter().copied().collect();
+    assert!(c.ensure_correct_store());
+    assert_eq!(c.kind(), Kind::Array);
+    check(&c, &model);
+    assert!(!c.ensure_correct_store());
+    let mut empty = Container::Bitmap(BitmapStore::new());
+    assert!(empty.ensure_correct_store());
+    assert_eq!(empty.kind(), Kind::Array);
+    assert!(empty.is_empty());
+}

@@ -319,6 +319,10 @@ impl ArrayStore {
                 heap.remove(pos);
                 if heap.len() <= POINT_REMOVAL_INLINE_LEN {
                     *self = ArrayStore::inline_from(heap.as_slice());
+                } else if heap.len() < heap.capacity() / 4 {
+                    // Mostly unused: give memory back (growth doubles, so this cannot
+                    // oscillate).
+                    heap.shrink_to_fit();
                 }
             }
         }
