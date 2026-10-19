@@ -943,7 +943,8 @@ impl Container {
             Container::Bitmap(b) => {
                 size_of::<Container>() - size_of::<BitmapStore>() + b.mem_size()
             }
-            Container::Run(r) => size_of::<Container>() - size_of::<RunStore>() + r.mem_size(),
+            // `RunStore::mem_size` reports the heap block only.
+            Container::Run(r) => size_of::<Container>() + r.mem_size(),
         }
     }
 

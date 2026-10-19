@@ -253,10 +253,10 @@ pub(crate) fn contents(c: &Container) -> Vec<u16> {
         Container::Bitmap(b) => {
             let mut out = Vec::new();
             for (k, &w) in b.as_words().iter().enumerate() {
-                for bit in 0..64 {
-                    if w >> bit & 1 == 1 {
-                        out.push((k * 64 + bit) as u16);
-                    }
+                let mut w = w;
+                while w != 0 {
+                    out.push((k * 64) as u16 + w.trailing_zeros() as u16);
+                    w &= w - 1;
                 }
             }
             out
@@ -910,6 +910,14 @@ fn serialization_array_bitmap() {
     assert_eq!(out, [0x34, 0x12]);
     let c = Container::from_sorted_unchecked(&(0..=u16::MAX).collect::<Vec<_>>());
     assert_eq!(c.descriptor(), u16::MAX);
+}
+
+#[test]
+fn run_mem_size() {
+    let c = Container::from_range(10..=20);
+    assert_eq!(c.kind(), Kind::Run);
+    // The 16-byte slot plus the heap block (8-byte header and one 4-byte interval at least).
+    assert!(c.mem_size() >= 16 + 8 + 4, "{}", c.mem_size());
 }
 
 #[test]
