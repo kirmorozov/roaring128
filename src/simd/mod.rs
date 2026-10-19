@@ -129,10 +129,10 @@ fn init_backend() -> SimdBackend {
             "neon" => Some(SimdBackend::Neon),
             _ => None,
         };
-        if let Some(requested) = requested {
-            if requested.is_supported() {
-                best = requested;
-            }
+        if let Some(requested) = requested
+            && requested.is_supported()
+        {
+            best = requested;
         }
     }
     BACKEND.store(best.to_u8(), Ordering::Relaxed);
@@ -214,6 +214,7 @@ pub(crate) enum BitOp {
 
 impl BitOp {
     #[inline(always)]
+    #[cfg_attr(not(any(test, miri)), allow(dead_code))] // Used by the reference kernels.
     pub(crate) fn apply(self, a: u64, b: u64) -> u64 {
         match self {
             BitOp::And => a & b,
@@ -302,6 +303,7 @@ dispatch! {
 
 /// Arrays at least this many times smaller than the other side are intersected with galloping
 /// (exponential search) instead of a linear merge.
+#[cfg_attr(not(any(test, miri)), allow(dead_code))] // Used by the reference kernels.
 pub(crate) const GALLOP_RATIO: usize = 32;
 
 /// Asserts the output-length contract of an array kernel.
