@@ -569,6 +569,26 @@ fn ranges_across_many_keys() {
     check(&rb, &model);
 }
 
+/// Like `roaring`, a range insertion stores every container it fills as a single run, including
+/// a middle container that was already full as a bitmap.
+#[test]
+fn insert_range_turns_full_bitmaps_into_runs() {
+    let mut rb = RoaringBitmap128::new();
+    for k in [2u128, 3] {
+        for i in 0..=u16::MAX {
+            rb.insert(join(k, i));
+        }
+    }
+    let stats = rb.statistics();
+    assert_eq!((stats.n_bitset_containers, stats.n_run_containers), (2, 0));
+    // Key 2 is a middle key (`fill_keys`), key 3 the last one (`Container::insert_range`).
+    assert_eq!(rb.insert_range(join(1, 7)..=join(3, 0xFFFF)), (1 << 16) - 7);
+    let stats = rb.statistics();
+    assert_eq!((stats.n_bitset_containers, stats.n_run_containers), (0, 3));
+    assert_eq!(rb.len(), 3 * (1 << 16) - 7);
+    rb.internal_validate().unwrap();
+}
+
 #[test]
 fn rank_and_select_from_both_ends() {
     let mut model = Model::new();

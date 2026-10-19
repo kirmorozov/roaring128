@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::mem;
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
-use crate::container::{BITMAP_BYTES, Container};
+use crate::container::{BITMAP_BYTES, Container, Kind};
 use crate::util::{MAX_KEY, container_range, convert_range_to_inclusive, join, split, split_range};
 use crate::{IntegerTooSmall, RoaringBitmap128};
 
@@ -125,8 +125,10 @@ impl RoaringBitmap128 {
                         inserted += FULL_LEN;
                     }
                     Entry::Occupied(mut entry) => {
+                        // Like `roaring`, a filled container ends up as a single run, even
+                        // one that was already full as a bitmap.
                         let container = entry.get_mut();
-                        if !container.is_full() {
+                        if !(container.kind() == Kind::Run && container.is_full()) {
                             inserted += FULL_LEN - container.len();
                             *container = Container::full();
                         }
