@@ -20,81 +20,43 @@ pub use self::sets::*;
 pub use self::workloads::*;
 pub use self::wrapped64::Wrapped64;
 
-/// Lazily built structures for one workload, one slot per implementation.
+/// A structure built lazily (on first use inside a benchmark closure) by inserting the
+/// workload's values in random order, optionally followed by `optimize()`.
 ///
-/// Building happens on first use inside a benchmark closure, so a criterion filter that excludes
-/// an implementation never builds (or panics in) it.
-pub struct Sets<'a> {
+/// Lazy building means a criterion filter that excludes an implementation never builds (or
+/// panics in) it. Benchmarks run implementation by implementation and drop the structure
+/// afterwards, so only one implementation's (possibly large) structures are alive at a time.
+pub struct Built<'a, S> {
     pub w: &'a Workload,
     optimized: bool,
-    r128: OnceCell<R128>,
-    w64: OnceCell<Wrapped64>,
-    bts: OnceCell<Bts>,
-    hs: OnceCell<Hs>,
-    tm: OnceCell<Tm>,
+    cell: OnceCell<S>,
 }
 
-impl<'a> Sets<'a> {
-    /// Structures built by inserting the values in random order.
-    pub fn new(w: &'a Workload) -> Sets<'a> {
-        Sets {
+impl<'a, S: Set128> Built<'a, S> {
+    pub fn new(w: &'a Workload) -> Self {
+        Built {
             w,
             optimized: false,
-            r128: OnceCell::new(),
-            w64: OnceCell::new(),
-            bts: OnceCell::new(),
-            hs: OnceCell::new(),
-            tm: OnceCell::new(),
+            cell: OnceCell::new(),
         }
     }
 
-    /// Same, followed by `optimize()` (run containers where smaller) for the roaring types.
-    pub fn optimized(w: &'a Workload) -> Sets<'a> {
-        Sets {
+    /// Insert build followed by `optimize()` (run containers where smaller, roaring types).
+    pub fn optimized(w: &'a Workload) -> Self {
+        Built {
             optimized: true,
-            ..Sets::new(w)
+            ..Built::new(w)
         }
     }
 
-    pub fn get<S: Cached>(&self) -> &S {
-        S::cell(self).get_or_init(|| {
+    pub fn get(&self) -> &S {
+        self.cell.get_or_init(|| {
             let mut s = S::build_insert(&self.w.shuffled);
             if self.optimized {
                 s.optimize();
             }
             s
         })
-    }
-}
-
-/// Maps an implementation to its slot in [`Sets`].
-pub trait Cached: Set128 {
-    fn cell<'s>(sets: &'s Sets<'_>) -> &'s OnceCell<Self>;
-}
-
-impl Cached for R128 {
-    fn cell<'s>(sets: &'s Sets<'_>) -> &'s OnceCell<Self> {
-        &sets.r128
-    }
-}
-impl Cached for Wrapped64 {
-    fn cell<'s>(sets: &'s Sets<'_>) -> &'s OnceCell<Self> {
-        &sets.w64
-    }
-}
-impl Cached for Bts {
-    fn cell<'s>(sets: &'s Sets<'_>) -> &'s OnceCell<Self> {
-        &sets.bts
-    }
-}
-impl Cached for Hs {
-    fn cell<'s>(sets: &'s Sets<'_>) -> &'s OnceCell<Self> {
-        &sets.hs
-    }
-}
-impl Cached for Tm {
-    fn cell<'s>(sets: &'s Sets<'_>) -> &'s OnceCell<Self> {
-        &sets.tm
     }
 }
 

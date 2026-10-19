@@ -10,7 +10,7 @@
 #   benches/run.sh test                  run every benchmark once (no measurement) + self-check
 #
 # Settings (environment):
-#   BENCH_WARMUP=0.3 BENCH_MEASURE=1 BENCH_SAMPLES=10   criterion warm-up / measurement seconds,
+#   BENCH_WARMUP=0.2 BENCH_MEASURE=0.8 BENCH_SAMPLES=10  criterion warm-up / measurement seconds,
 #                                                        samples (a full run takes ~10-15 min)
 #   BENCH_CPU=<n>     pin to one core with taskset (less scheduler migration noise)
 #   BENCH_OUT=<dir>   logs and report (default target/bench-results)
@@ -21,8 +21,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-WARMUP=${BENCH_WARMUP:-0.3}
-MEASURE=${BENCH_MEASURE:-1}
+WARMUP=${BENCH_WARMUP:-0.2}
+MEASURE=${BENCH_MEASURE:-0.8}
 SAMPLES=${BENCH_SAMPLES:-10}
 OUT=${BENCH_OUT:-target/bench-results}
 CRIT=(--warm-up-time "$WARMUP" --measurement-time "$MEASURE" --sample-size "$SAMPLES"

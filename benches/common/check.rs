@@ -325,6 +325,7 @@ fn check_btreeset(fx: &Fixtures) -> Res {
     }
     for p in &fx.pairs {
         check_algebra::<Bts>(p)?;
+        check_in_place::<Bts>(p)?;
     }
     for ws in &fx.many {
         check_many::<Bts>(ws)?;

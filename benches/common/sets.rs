@@ -40,6 +40,10 @@ impl Digest {
 pub trait Set128: Clone + Sized {
     /// Name used in benchmark ids: `<group>/<NAME>/<workload>`.
     const NAME: &'static str;
+    /// [`Set128::build_sorted`] is supported.
+    const BULK_BUILD: bool = false;
+    /// [`Set128::range_digest`] is supported.
+    const RANGE: bool = false;
 
     fn new_empty() -> Self;
     fn insert(&mut self, v: u128) -> bool;
@@ -111,6 +115,8 @@ pub trait Serial: Set128 {
 
 impl Set128 for R128 {
     const NAME: &'static str = "roaring128";
+    const BULK_BUILD: bool = true;
+    const RANGE: bool = true;
 
     fn new_empty() -> Self {
         R128::new()
@@ -216,6 +222,8 @@ impl Serial for R128 {
 
 impl Set128 for Wrapped64 {
     const NAME: &'static str = "wrapped64";
+    const BULK_BUILD: bool = true;
+    const RANGE: bool = true;
 
     fn new_empty() -> Self {
         Wrapped64::new()
@@ -321,6 +329,8 @@ impl Serial for Wrapped64 {
 
 impl Set128 for Bts {
     const NAME: &'static str = "btreeset";
+    const BULK_BUILD: bool = true;
+    const RANGE: bool = true;
 
     fn new_empty() -> Self {
         BTreeSet::new()
@@ -398,6 +408,28 @@ impl SetAlgebra for Bts {
     }
 }
 
+/// What a `BTreeSet` user writes for in-place operators.
+impl SetAlgebraInPlace for Bts {
+    fn and_assign(&mut self, o: &Self) {
+        self.retain(|v| o.contains(v));
+    }
+    fn or_assign(&mut self, o: &Self) {
+        self.extend(o.iter().copied());
+    }
+    fn sub_assign(&mut self, o: &Self) {
+        for v in o {
+            self.remove(v);
+        }
+    }
+    fn xor_assign(&mut self, o: &Self) {
+        for &v in o {
+            if !self.remove(&v) {
+                self.insert(v);
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------
 // HashSet<u128> (std SipHash-1-3, as a user would get by default)
 // ------------------------------------------------------------------------------------------
@@ -444,6 +476,7 @@ fn to_u64(v: u128) -> u64 {
 
 impl Set128 for Tm {
     const NAME: &'static str = "treemap";
+    const BULK_BUILD: bool = true;
 
     fn new_empty() -> Self {
         RoaringTreemap::new()

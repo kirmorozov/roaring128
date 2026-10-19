@@ -10,14 +10,9 @@
 
 mod common;
 
-use criterion::measurement::WallTime;
-use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput};
+use criterion::{Bencher, BenchmarkId, Criterion, Throughput};
 
 use common::*;
-
-type Group<'a> = BenchmarkGroup<'a, WallTime>;
-
-const M1: usize = 1_000_000;
 
 #[derive(Clone, Copy)]
 enum Op {
@@ -58,216 +53,179 @@ impl Op {
     }
 }
 
-fn binop<S: Cached + SetAlgebra>(
-    g: &mut Group<'_>,
-    name: &str,
-    a: &Sets<'_>,
-    b: &Sets<'_>,
-    op: Op,
+/// One benchmark in its own group (groups are per operation).
+fn bench(
+    c: &mut Criterion,
+    group: &str,
+    elements: usize,
+    id: BenchmarkId,
+    f: impl FnMut(&mut Bencher<'_>),
 ) {
-    g.bench_function(BenchmarkId::new(S::NAME, name), |bench| {
-        let (x, y) = (a.get::<S>(), b.get::<S>());
-        time_build(bench, || op.apply(x, y))
-    });
-}
-
-/// `target op= &other`; the clone of `target` is made outside the timed region.
-fn assign<S: Cached + SetAlgebraInPlace>(
-    g: &mut Group<'_>,
-    name: &str,
-    target: &Sets<'_>,
-    other: &Sets<'_>,
-    op: Op,
-) {
-    g.bench_function(BenchmarkId::new(S::NAME, name), |bench| {
-        let (x, y) = (target.get::<S>(), other.get::<S>());
-        time_with_setup(
-            bench,
-            || x.clone(),
-            |mut x| {
-                op.apply_assign(&mut x, y);
-                x
-            },
-        )
-    });
-}
-
-fn intersection_len<S: Cached + SetAlgebra>(
-    g: &mut Group<'_>,
-    name: &str,
-    a: &Sets<'_>,
-    b: &Sets<'_>,
-) {
-    g.bench_function(BenchmarkId::new(S::NAME, name), |bench| {
-        let (x, y) = (a.get::<S>(), b.get::<S>());
-        bench.iter(|| x.intersection_len(y))
-    });
-}
-
-fn is_subset<S: Cached + SetAlgebra>(
-    g: &mut Group<'_>,
-    name: &str,
-    sub: &Sets<'_>,
-    sup: &Sets<'_>,
-) {
-    g.bench_function(BenchmarkId::new(S::NAME, name), |bench| {
-        let (x, y) = (sub.get::<S>(), sup.get::<S>());
-        assert!(x.is_subset(y));
-        bench.iter(|| x.is_subset(y))
-    });
-}
-
-fn many<S: Cached + SetAlgebra>(g: &mut Group<'_>, name: &str, sets: &[Sets<'_>], union: bool) {
-    g.bench_function(BenchmarkId::new(S::NAME, name), |bench| {
-        let refs: Vec<&S> = sets.iter().map(|s| s.get::<S>()).collect();
-        if union {
-            time_build(bench, || S::union_many(&refs))
-        } else {
-            time_build(bench, || S::intersection_many(&refs))
-        }
-    });
-}
-
-/// `[roaring128, wrapped64, btreeset]` for 128-bit data, `[roaring128, treemap]` for `u64` data;
-/// `in_place` drops `btreeset` (no in-place operators in `std`).
-macro_rules! each {
-    ($u64:expr, all, $f:ident($($a:expr),*)) => {
-        if $u64 {
-            $f::<R128>($($a),*);
-            $f::<Tm>($($a),*);
-        } else {
-            $f::<R128>($($a),*);
-            $f::<Wrapped64>($($a),*);
-            $f::<Bts>($($a),*);
-        }
-    };
-    ($u64:expr, in_place, $f:ident($($a:expr),*)) => {
-        if $u64 {
-            $f::<R128>($($a),*);
-            $f::<Tm>($($a),*);
-        } else {
-            $f::<R128>($($a),*);
-            $f::<Wrapped64>($($a),*);
-        }
-    };
-}
-
-fn group<'c>(c: &'c mut Criterion, name: &str, elements: usize) -> Group<'c> {
-    let mut g = c.benchmark_group(name);
+    let mut g = c.benchmark_group(group);
     g.throughput(Throughput::Elements(elements as u64));
-    g
+    g.bench_function(id, f);
+    g.finish();
 }
 
 const ALGEBRA: u32 = 1;
 const IN_PLACE: u32 = 2;
 const SUBSET: u32 = 4;
 
+/// Every pairwise measurement for one implementation; its structures are dropped before the
+/// next implementation starts.
+fn pair<S: SetAlgebra + SetAlgebraInPlace>(
+    c: &mut Criterion,
+    p: &Pair,
+    sub: &Workload,
+    flags: u32,
+) {
+    let name = p.name.as_str();
+    let id = || BenchmarkId::new(S::NAME, name);
+    let elements = p.a.len() + p.b.len();
+    let (a, b) = (Built::<S>::new(&p.a), Built::<S>::new(&p.b));
+    if flags & ALGEBRA != 0 {
+        for op in Op::ALL {
+            bench(c, op.name(), elements, id(), |bench| {
+                let (x, y) = (a.get(), b.get());
+                time_build(bench, || op.apply(x, y))
+            });
+        }
+        bench(c, "intersection_len", elements, id(), |bench| {
+            let (x, y) = (a.get(), b.get());
+            bench.iter(|| x.intersection_len(y))
+        });
+    }
+    if flags & IN_PLACE != 0 {
+        // `target op= &other`, the clone of `target` is not timed. With skewed sizes the small
+        // set is the target (cloning the big one per iteration would dominate the run time).
+        let (target, other) = if p.a.len() > 10 * p.b.len() {
+            (&b, &a)
+        } else {
+            (&a, &b)
+        };
+        for op in Op::ALL {
+            bench(
+                c,
+                &format!("{}_assign", op.name()),
+                elements,
+                id(),
+                |bench| {
+                    let (x, y) = (target.get(), other.get());
+                    time_with_setup(
+                        bench,
+                        || x.clone(),
+                        |mut x| {
+                            op.apply_assign(&mut x, y);
+                            x
+                        },
+                    )
+                },
+            );
+        }
+    }
+    if flags & SUBSET != 0 {
+        let sub_built = Built::<S>::new(sub);
+        let sub_id = BenchmarkId::new(S::NAME, &sub.name);
+        bench(c, "is_subset", sub.len() + p.a.len(), sub_id, |bench| {
+            let (x, y) = (sub_built.get(), a.get());
+            assert!(x.is_subset(y));
+            bench.iter(|| x.is_subset(y))
+        });
+    }
+}
+
+const K500: usize = 500_000;
+const M1: usize = 1_000_000;
+
 fn pairs(c: &mut Criterion) {
-    let specs: Vec<(Box<dyn Fn() -> Pair>, u32)> = vec![
+    // Symmetric sparse pairs use 500k values per side: the wrapped-roaring64 baseline needs about
+    // 540 bytes per random UUID, so 1M-value operands (plus results and clones) would not leave
+    // a laptop's memory alone.
+    type Make = fn() -> Pair;
+    let specs: [(Make, u32); 10] = [
         (
-            Box::new(|| Pair::split(Kind::UuidV4, M1, M1, M1 / 2, 100)),
+            || Pair::split(Kind::UuidV4, K500, K500, K500 / 2, 100),
             ALGEBRA | IN_PLACE | SUBSET,
         ),
         (
-            Box::new(|| Pair::split(Kind::UuidV4, M1, M1, M1 / 100, 101)),
+            || Pair::split(Kind::UuidV4, K500, K500, K500 / 100, 101),
             ALGEBRA,
         ),
         (
-            Box::new(|| Pair::split(Kind::UuidV4, M1, 1_000, 500, 102)),
+            || Pair::split(Kind::UuidV4, M1, 1_000, 500, 102),
             ALGEBRA | IN_PLACE | SUBSET,
         ),
         (
-            Box::new(|| Pair::split(Kind::UuidV7, M1, M1, M1 / 2, 103)),
+            || Pair::split(Kind::UuidV7, K500, K500, K500 / 2, 103),
             ALGEBRA,
         ),
+        (|| Pair::independent(Kind::DenseRuns, M1, 104), ALGEBRA),
         (
-            Box::new(|| Pair::independent(Kind::DenseRuns, M1, 104)),
-            ALGEBRA,
+            || Pair::independent(Kind::DenseGaps50, M1, 105),
+            ALGEBRA | IN_PLACE | SUBSET,
         ),
+        (|| Pair::independent(Kind::DenseSmall, M1, 106), ALGEBRA),
         (
-            Box::new(|| Pair::independent(Kind::DenseGaps50, M1, 105)),
+            || Pair::split(Kind::Mixed, K500, K500, K500 / 2, 107),
             ALGEBRA | IN_PLACE | SUBSET,
         ),
         (
-            Box::new(|| Pair::independent(Kind::DenseSmall, M1, 106)),
+            || Pair::split(Kind::RandomU64, K500, K500, K500 / 2, 108),
             ALGEBRA,
         ),
         (
-            Box::new(|| Pair::split(Kind::Mixed, M1, M1, M1 / 2, 107)),
-            ALGEBRA | IN_PLACE | SUBSET,
-        ),
-        (
-            Box::new(|| Pair::split(Kind::RandomU64, M1, M1, M1 / 2, 108)),
-            ALGEBRA,
-        ),
-        (
-            Box::new(|| Pair::independent(Kind::DenseGaps50U64, M1, 109)),
+            || Pair::independent(Kind::DenseGaps50U64, M1, 109),
             ALGEBRA | IN_PLACE,
         ),
     ];
     for (make, flags) in specs {
         let p = make();
-        let u64 = p.a.kind.fits_u64();
-        let name = p.name.as_str();
-        let (a, b) = (Sets::new(&p.a), Sets::new(&p.b));
-        let (a, b) = (&a, &b);
-        let elements = p.a.len() + p.b.len();
-
-        if flags & ALGEBRA != 0 {
-            for op in Op::ALL {
-                let mut g = group(c, op.name(), elements);
-                each!(u64, all, binop(&mut g, name, a, b, op));
-                g.finish();
-            }
-            let mut g = group(c, "intersection_len", elements);
-            each!(u64, all, intersection_len(&mut g, name, a, b));
-            g.finish();
-        }
-        if flags & IN_PLACE != 0 {
-            // With skewed sizes the small set is the target (cloning the big one per iteration
-            // would dominate the run time).
-            let (target, other) = if p.a.len() > 10 * p.b.len() {
-                (b, a)
-            } else {
-                (a, b)
-            };
-            for op in Op::ALL {
-                let mut g = group(c, &format!("{}_assign", op.name()), elements);
-                each!(u64, in_place, assign(&mut g, name, target, other, op));
-                g.finish();
-            }
-        }
-        if flags & SUBSET != 0 {
-            // A random half of `a` (or the whole small set of a skewed pair) against `a`.
-            let sub = if p.b.len() * 10 < p.a.len() {
-                p.a.subset(p.b.len() as f64 / p.a.len() as f64, 7)
-            } else {
-                p.a.subset(0.5, 7)
-            };
-            let sub_sets = Sets::new(&sub);
-            let mut g = group(c, "is_subset", sub.len() + p.a.len());
-            let sub_name = format!("{name}_sub");
-            each!(u64, all, is_subset(&mut g, &sub_name, &sub_sets, a));
-            g.finish();
+        // A random half of `a`, or a 1k subset of the big side of a skewed pair.
+        let fraction = if p.b.len() * 10 < p.a.len() {
+            p.b.len() as f64 / p.a.len() as f64
+        } else {
+            0.5
+        };
+        let mut sub = p.a.subset(fraction, 7);
+        sub.name = format!("{}_sub", p.name);
+        pair::<R128>(c, &p, &sub, flags);
+        if p.a.kind.fits_u64() {
+            pair::<Tm>(c, &p, &sub, flags);
+        } else {
+            pair::<Wrapped64>(c, &p, &sub, flags);
+            pair::<Bts>(c, &p, &sub, flags);
         }
     }
 }
 
+fn many<S: SetAlgebra>(c: &mut Criterion, ws: &[Workload]) {
+    let built: Vec<Built<'_, S>> = ws.iter().map(Built::new).collect();
+    let elements: usize = ws.iter().map(Workload::len).sum();
+    let id = BenchmarkId::new(S::NAME, &ws[0].name);
+    bench(c, "multi_union16", elements, id.clone(), |b| {
+        let refs: Vec<&S> = built.iter().map(Built::get).collect();
+        time_build(b, || S::union_many(&refs))
+    });
+    bench(c, "multi_intersection16", elements, id, |b| {
+        let refs: Vec<&S> = built.iter().map(Built::get).collect();
+        time_build(b, || S::intersection_many(&refs))
+    });
+}
+
 fn multi(c: &mut Criterion) {
-    let specs: Vec<Vec<Workload>> = vec![
-        many_with_core(Kind::UuidV4, 16, 100_000, 10_000, 200),
-        many_independent(Kind::DenseRuns, 16, 100_000, 201),
-        many_independent(Kind::DenseRunsU64, 16, 100_000, 202),
+    let specs: [fn() -> Vec<Workload>; 3] = [
+        || many_with_core(Kind::UuidV4, 16, 100_000, 10_000, 200),
+        || many_independent(Kind::DenseRuns, 16, 100_000, 201),
+        || many_independent(Kind::DenseRunsU64, 16, 100_000, 202),
     ];
-    for ws in &specs {
-        let u64 = ws[0].kind.fits_u64();
-        let name = ws[0].name.as_str();
-        let sets: Vec<Sets<'_>> = ws.iter().map(Sets::new).collect();
-        let elements: usize = ws.iter().map(Workload::len).sum();
-        for (union, group_name) in [(true, "multi_union16"), (false, "multi_intersection16")] {
-            let mut g = group(c, group_name, elements);
-            each!(u64, all, many(&mut g, name, &sets, union));
-            g.finish();
+    for make in specs {
+        let ws = make();
+        many::<R128>(c, &ws);
+        if ws[0].kind.fits_u64() {
+            many::<Tm>(c, &ws);
+        } else {
+            many::<Wrapped64>(c, &ws);
+            many::<Bts>(c, &ws);
         }
     }
 }
