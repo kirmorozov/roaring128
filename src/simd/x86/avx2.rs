@@ -6,7 +6,7 @@
 //!   twice as fast as scalar `popcnt` even on Zen 3, where `popcnt` has four ports.
 //! * `intersects` / `is_subset` test 1 KiB blocks with `vptest` and exit early.
 //! * `count_runs` loads every vector a second time one word earlier (unaligned) for the carry.
-//! * `bitmap_to_array` picks a decoder per block of 16 words from the block's popcount: a
+//! * `bitmap_to_array` picks a decoder per block of 64 words from a sampled popcount: a
 //!   `tzcnt` loop for sparse blocks (the usual case when a bitmap shrinks to an array), an
 //!   unrolled `tzcnt` sequence with packed stores for medium density, and a per-byte index
 //!   table (`vpmovzxbw` + 16-byte stores) for dense blocks.

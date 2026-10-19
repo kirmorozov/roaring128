@@ -6,7 +6,7 @@
 //! * `intersects` / `is_subset` fold 1 KiB blocks with `vpternlogq` and exit early.
 //! * `bitmap_to_array` compresses index vectors with `vpcompressw` (32 bits at a time, no
 //!   data-dependent branches); full width stores while there is room, masked stores at the
-//!   end of the output. Blocks of 16 words with at most one bit per word use a `tzcnt` loop.
+//!   end of the output. Blocks of 64 words with at most one bit per word use a `tzcnt` loop.
 //! * `count_runs` uses one `vpternlogq` per vector for `w & !(w << 1 | carry)`.
 //! * Array kernels: see [`super::arrays`]; lanes are packed with `vpcompressw`, partial blocks
 //!   are read and written with masked loads and stores.
