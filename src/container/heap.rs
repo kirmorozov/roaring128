@@ -322,6 +322,50 @@ impl<T: Copy> HeapVec<T> {
         }
     }
 
+    /// Replaces `range` with the items of `values`, which must yield exactly `values.len()`
+    /// items (panics otherwise, leaving the vector with its old length).
+    pub(crate) fn splice_iter<I: ExactSizeIterator<Item = T>>(
+        &mut self,
+        range: Range<usize>,
+        values: I,
+    ) {
+        let len = self.len();
+        assert!(
+            range.start <= range.end && range.end <= len,
+            "range out of bounds"
+        );
+        let count = values.len();
+        let new_len = len - range.len() + count;
+        if new_len > self.capacity() {
+            self.reserve(new_len - len);
+        }
+        if new_len == 0 {
+            // SAFETY: zero elements are trivially initialized.
+            unsafe { self.set_len(0) };
+            return;
+        }
+        let base = self.data_ptr();
+        // SAFETY: capacity >= new_len, so the moved tail stays inside the allocation.
+        unsafe {
+            ptr::copy(
+                base.add(range.end),
+                base.add(range.start + count),
+                len - range.end,
+            )
+        };
+        // Until `set_len`, the length is still `len`: every element below it stays initialized
+        // (with old or moved values), so a panicking iterator cannot expose uninitialized data.
+        let mut written = 0;
+        for value in values.take(count) {
+            // SAFETY: `range.start + written < range.start + count <= new_len <= capacity`.
+            unsafe { base.add(range.start + written).write(value) };
+            written += 1;
+        }
+        assert_eq!(written, count, "ExactSizeIterator reported a wrong length");
+        // SAFETY: the gap was filled and the tail moved, so `new_len` elements are initialized.
+        unsafe { self.set_len(new_len) };
+    }
+
     pub(crate) fn truncate(&mut self, len: usize) {
         if len < self.len() {
             // SAFETY: shrinking keeps a prefix of initialized elements.
@@ -447,7 +491,8 @@ mod tests {
             model.insert(i, 1000 + k as u16);
         }
         assert_eq!(v.as_slice(), &model[..]);
-        for i in [0usize, 10, 200, 302] {
+        // 305 elements before the removals: the last index is 301 after three removals.
+        for i in [0usize, 10, 200, 301] {
             assert_eq!(v.remove(i), model.remove(i));
         }
         assert_eq!(v.as_slice(), &model[..]);
@@ -480,8 +525,10 @@ mod tests {
         assert_eq!(v.capacity(), 4);
         v.reserve_exact(1);
         assert_eq!(v.capacity(), 5);
+        // Like `Vec::reserve`: room for at least `len + additional` = 104 elements.
         v.reserve(100);
-        assert!(v.capacity() >= 105);
+        assert!(v.capacity() >= 104);
+        assert_eq!(v.capacity(), 104);
         v.clear();
         v.shrink_to_fit();
         assert_eq!(v.capacity(), 0);
