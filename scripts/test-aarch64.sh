@@ -3,7 +3,8 @@
 #
 # Usage: scripts/test-aarch64.sh [cargo test arguments...]
 #   e.g. scripts/test-aarch64.sh --lib simd
-#        scripts/test-aarch64.sh --release --lib simd -- --ignored neon_timing --nocapture
+#        scripts/test-aarch64.sh --release --lib simd::tests::kernel_timings -- --ignored --nocapture
+#        ROARING128_CARGO=clippy scripts/test-aarch64.sh --all-targets
 #
 # Nothing is installed system wide and no binfmt handler is registered. The tools are downloaded
 # once (pinned versions, SHA-256 verified) into the cache directory:
@@ -23,6 +24,8 @@
 #                            use an existing aarch64 C toolchain instead of downloading Zig
 #   ROARING128_EXPECT_BACKEND
 #                            backend the tests assert to be selected (default: neon)
+#   ROARING128_CARGO         cargo subcommand to run instead of `test` (e.g. `check`, `clippy`,
+#                            `build`); QEMU is only set up for `test`, `run` and `bench`
 #
 # On an aarch64 host (Linux or macOS) this simply runs `cargo test` natively for the host target.
 
@@ -153,11 +156,12 @@ EOF
 
 command -v cargo >/dev/null || die "cargo not found"
 export ROARING128_EXPECT_BACKEND="${ROARING128_EXPECT_BACKEND-neon}"
+subcommand="${ROARING128_CARGO:-test}"
 
 case "$(uname -m)" in
     aarch64 | arm64)
-        log "native aarch64 host, running the tests without emulation"
-        exec cargo test "$@"
+        log "native aarch64 host, running without emulation"
+        exec cargo "$subcommand" "$@"
         ;;
     x86_64 | amd64) ;;
     *) die "unsupported host architecture $(uname -m) (need x86_64 or aarch64)" ;;
@@ -169,13 +173,17 @@ if command -v rustup >/dev/null && ! rustup target list --installed | grep -qx "
     rustup target add "$TARGET"
 fi
 
-ensure_qemu
 ensure_c_toolchain
 linker_var="CARGO_TARGET_${TARGET_ENV}_LINKER"
-runner_var="CARGO_TARGET_${TARGET_ENV}_RUNNER"
 export "${linker_var}=${!linker_var:-rust-lld}"
-export "${runner_var}=${!runner_var:-$QEMU}"
-export QEMU_CPU="${ROARING128_QEMU_CPU:-${QEMU_CPU:-max}}"
-log "runner: ${!runner_var} (QEMU_CPU=${QEMU_CPU})"
+case "$subcommand" in
+    test | t | run | r | bench)
+        ensure_qemu
+        runner_var="CARGO_TARGET_${TARGET_ENV}_RUNNER"
+        export "${runner_var}=${!runner_var:-$QEMU}"
+        export QEMU_CPU="${ROARING128_QEMU_CPU:-${QEMU_CPU:-max}}"
+        log "runner: ${!runner_var} (QEMU_CPU=${QEMU_CPU})"
+        ;;
+esac
 
-exec cargo test --target "$TARGET" "$@"
+exec cargo "$subcommand" --target "$TARGET" "$@"
