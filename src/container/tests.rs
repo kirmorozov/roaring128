@@ -923,6 +923,16 @@ fn run_serialization() {
     assert_eq!(out, [0x02, 0x01, 0x02, 0x02]);
 }
 
+/// The public iterators and bitmaps wrap these types and must stay `Send + Sync`.
+#[test]
+fn auto_traits() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Container>();
+    send_sync::<Iter<'static>>();
+    send_sync::<IntoIter>();
+    assert_eq!(core::mem::size_of::<Option<Container>>(), 16);
+}
+
 #[test]
 fn mem_size() {
     assert_eq!(Container::new().mem_size(), 16);
