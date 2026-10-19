@@ -1,0 +1,12 @@
+# CI helper: prints (and optionally asserts) the SIMD backend roaring128 selects at runtime.
+# Lives outside the crate's sources on purpose; it is its own workspace and is never published.
+[package]
+name = "backend-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+roaring128 = { path = "../../.." }
+
+[workspace]

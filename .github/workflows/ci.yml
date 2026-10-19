@@ -1,0 +1,282 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  # Intel Software Development Emulator, pinned. Official mirror URL and the SHA-256 published on
+  # https://www.intel.com/content/www/us/en/download/684897/intel-software-development-emulator.html
+  SDE_VERSION: 10.13.1-2026-07-28
+  SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
+  SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
+  # Prints / asserts the backend roaring128 selects at runtime (see .github/ci/backend-probe).
+  # Built quietly by the "Build backend probe" steps (the build log is only shown on failure).
+  PROBE: target/backend-probe/debug/backend-probe
+
+defaults:
+  run:
+    # Explicit bash => `bash --noprofile --norc -eo pipefail`, so `cmd | tee` fails when cmd fails.
+    shell: bash
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo fmt --manifest-path .github/ci/backend-probe/Cargo.toml --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # TODO(lead): enable -D warnings once stubs are implemented, i.e. change the command to
+      #   cargo clippy --all-targets --all-features -- -D warnings
+      # Until then warnings are reported (log + job summary) but do not fail the job.
+      - name: cargo clippy (warnings reported, not fatal yet)
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --all-features 2>&1 | tee clippy.log
+          n=$(sed 's/\x1b\[[0-9;]*m//g' clippy.log | grep -E '^warning: ' | grep -vcE 'generated [0-9]+ warning' || true)
+          echo "::notice title=clippy::${n} clippy warning lines (not fatal yet)"
+          echo "clippy: **${n}** warning lines (not fatal yet, see TODO in ci.yml)" >> "$GITHUB_STEP_SUMMARY"
+
+  check:
+    name: check (${{ matrix.target }}, ${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+        features: [default, --no-default-features, --all-features]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.features }}
+      - name: cargo check --target ${{ matrix.target }} ${{ matrix.features }}
+        run: cargo check --target ${{ matrix.target }} ${{ matrix.features != 'default' && matrix.features || '' }}
+
+  msrv:
+    name: msrv (1.91)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-features
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The docs build is warning-free today; keep it that way (broken intra-doc links etc.).
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+
+  test-x86:
+    name: test-x86 (backend ${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [auto, avx2]
+    env:
+      # Empty means "not forced": the crate ignores unknown/empty values and auto-detects.
+      ROARING128_FORCE_BACKEND: ${{ matrix.backend != 'auto' && matrix.backend || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Runner CPU
+        run: |
+          lscpu
+          echo "AVX-512 flags: $(grep -o 'avx512[a-z0-9_]*' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+      - name: Build backend probe
+        run: |
+          cargo build --manifest-path .github/ci/backend-probe/Cargo.toml --target-dir target/backend-probe > probe-build.log 2>&1 || { cat probe-build.log; exit 1; }
+      - name: Selected backend
+        run: |
+          args=()
+          if [ -n "$ROARING128_FORCE_BACKEND" ]; then args=(--expect "$ROARING128_FORCE_BACKEND"); fi
+          "$PROBE" "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: cargo test --lib simd (blocking)
+        run: cargo test --lib simd
+      # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
+      - name: cargo test --all-features (non-blocking for now)
+        id: full
+        continue-on-error: true
+        run: cargo test --all-features
+      - name: Report non-blocking results
+        if: always()
+        run: |
+          echo "full test suite: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.full.outcome }}" != "success" ]; then
+            echo "::warning title=full test suite (non-blocking)::cargo test --all-features: ${{ steps.full.outcome }}"
+          fi
+
+  test-avx512-sde:
+    name: test-avx512-sde (sde -${{ matrix.cpu }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # icx = Ice Lake server, spr = Sapphire Rapids. Both expose the full AVX-512 tier.
+        cpu: [icx, spr]
+    env:
+      SDE_DIR: ${{ github.workspace }}/.sde
+      # Every test binary started by `cargo test` is executed under the emulator.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/.sde/sde64 -${{ matrix.cpu }} --
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore Intel SDE from cache
+        id: sde-cache
+        uses: actions/cache@v5
+        with:
+          path: .sde
+          key: intel-sde-${{ env.SDE_VERSION }}-lin
+      - name: Download Intel SDE ${{ env.SDE_VERSION }}
+        if: steps.sde-cache.outputs.cache-hit != 'true'
+        run: |
+          dl="$RUNNER_TEMP/sde-download"
+          mkdir -p "$dl" "$SDE_DIR"
+          curl -fsSL --retry 5 --retry-delay 5 -o "$dl/sde.tar.xz" "$SDE_URL"
+          echo "$SDE_SHA256  $dl/sde.tar.xz" | sha256sum -c -
+          tar -xJf "$dl/sde.tar.xz" --strip-components=1 -C "$SDE_DIR"
+          rm -rf "$dl"
+      - name: SDE version
+        run: '"$SDE_DIR/sde64" -version'
+      - name: Runner CPU (host)
+        run: |
+          echo "host AVX-512 flags: $(grep -o 'avx512[a-z0-9_]*' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+      - name: Build backend probe
+        run: |
+          cargo build --manifest-path .github/ci/backend-probe/Cargo.toml --target-dir target/backend-probe > probe-build.log 2>&1 || { cat probe-build.log; exit 1; }
+      - name: Selected backend under sde -${{ matrix.cpu }} (must be avx512)
+        run: |
+          "$SDE_DIR/sde64" -${{ matrix.cpu }} -- "$PROBE" --expect avx512 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Hardware policy checks (Haswell -> avx2, Sandy Bridge -> panic)
+        if: matrix.cpu == 'icx'
+        run: |
+          "$SDE_DIR/sde64" -hsw -- "$PROBE" --expect avx2
+          if "$SDE_DIR/sde64" -snb -- "$PROBE" > snb.log 2>&1; then
+            cat snb.log; echo "::error::expected a panic on a CPU without AVX2"; exit 1
+          fi
+          cat snb.log
+          grep -q 'requires an x86_64 CPU with AVX2' snb.log
+      - name: cargo test --lib simd under sde -${{ matrix.cpu }} (blocking)
+        run: cargo test --lib simd
+      # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
+      # Doctests are skipped: they are not run through the SDE runner.
+      - name: cargo test --all-features --lib --tests under sde -${{ matrix.cpu }} (non-blocking for now)
+        id: full
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test --all-features --lib --tests
+      - name: Report non-blocking results
+        if: always()
+        run: |
+          echo "full test suite under sde -${{ matrix.cpu }}: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.full.outcome }}" != "success" ]; then
+            echo "::warning title=full test suite under SDE (non-blocking)::sde -${{ matrix.cpu }}: ${{ steps.full.outcome }}"
+          fi
+
+  test-aarch64:
+    name: test-aarch64 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm: native Linux AArch64 (free for public repos); macos-latest: Apple Silicon.
+        os: [ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Runner CPU
+        run: |
+          uname -a
+          if [ "$RUNNER_OS" = "Linux" ]; then lscpu; else sysctl -n machdep.cpu.brand_string; sysctl hw.optional | grep -i -E 'neon|simd|arm' || true; fi
+      - name: Build backend probe
+        run: |
+          cargo build --manifest-path .github/ci/backend-probe/Cargo.toml --target-dir target/backend-probe > probe-build.log 2>&1 || { cat probe-build.log; exit 1; }
+      - name: Selected backend (must be neon)
+        run: |
+          "$PROBE" --expect neon | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: cargo test --lib simd (blocking)
+        run: cargo test --lib simd
+      # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
+      - name: cargo test --all-features (non-blocking for now)
+        id: full
+        continue-on-error: true
+        run: cargo test --all-features
+      - name: Report non-blocking results
+        if: always()
+        run: |
+          echo "full test suite: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.full.outcome }}" != "success" ]; then
+            echo "::warning title=full test suite (non-blocking)::cargo test --all-features: ${{ steps.full.outcome }}"
+          fi
+
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo miri setup
+      # TODO(lead): drop continue-on-error once the container code is implemented.
+      - name: cargo miri test --lib container (non-blocking for now)
+        id: miri
+        continue-on-error: true
+        run: cargo miri test --lib container
+      - name: Report non-blocking results
+        if: always()
+        run: |
+          echo "miri: ${{ steps.miri.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.miri.outcome }}" != "success" ]; then
+            echo "::warning title=miri (non-blocking)::cargo miri test --lib container: ${{ steps.miri.outcome }}"
+          fi
