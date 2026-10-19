@@ -966,49 +966,6 @@ fn extract_bits(mut bits: u64, word: usize, out: &mut [MaybeUninit<u16>], mut k:
     k
 }
 
-/// Defines word kernels once and instantiates them for every SIMD tier of the target: the
-/// wrapper dispatches on [`simd::backend`] (`x86_64`) so that popcounts, masks and fills are
-/// compiled with the instructions of the running CPU. Miri and `aarch64` (NEON baseline) use
-/// the plain instantiation.
-macro_rules! word_kernels {
-    ($(
-        $(#[$meta:meta])*
-        fn $name:ident($($arg:ident : $ty:ty),* $(,)?) $(-> $ret:ty)? $body:block
-    )*) => {$(
-        $(#[$meta])*
-        #[inline]
-        fn $name($($arg: $ty),*) $(-> $ret)? {
-            #[inline(always)]
-            fn generic($($arg: $ty),*) $(-> $ret)? $body
-
-            #[cfg(all(target_arch = "x86_64", not(miri)))]
-            {
-                #[target_feature(enable = "avx2,bmi1,bmi2,popcnt,sse4.2")]
-                unsafe fn avx2($($arg: $ty),*) $(-> $ret)? {
-                    generic($($arg),*)
-                }
-
-                #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512bitalg,avx512vbmi2,avx2,bmi1,bmi2,popcnt,sse4.2")]
-                unsafe fn avx512($($arg: $ty),*) $(-> $ret)? {
-                    generic($($arg),*)
-                }
-
-                match simd::backend() {
-                    // SAFETY: `backend()` only reports tiers supported by the running CPU.
-                    simd::SimdBackend::Avx512 => unsafe { avx512($($arg),*) },
-                    // SAFETY: as above; AVX2 is the minimum tier on x86_64.
-                    simd::SimdBackend::Avx2 => unsafe { avx2($($arg),*) },
-                    simd::SimdBackend::Neon => unreachable!("NEON backend on x86_64"),
-                }
-            }
-            #[cfg(not(all(target_arch = "x86_64", not(miri))))]
-            {
-                generic($($arg),*)
-            }
-        }
-    )*};
-}
-
 word_kernels! {
     /// Number of set bits of `words` covered by the runs.
     fn card_and(runs: &[Interval], words: &Words) -> u64 {

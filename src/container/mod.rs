@@ -31,6 +31,51 @@ use alloc::vec::Vec;
 
 use crate::simd::BitOp;
 
+/// Defines word kernels once and instantiates them for every SIMD tier of the target: the
+/// wrapper dispatches on [`crate::simd::backend`] (`x86_64`) so that popcounts, masks and fills
+/// are compiled with the instructions of the running CPU (the crate itself is built for the
+/// baseline target, where `u64::count_ones` is not a single instruction). Miri and `aarch64`
+/// (NEON baseline) use the plain instantiation. Used by the run and bitmap stores for word
+/// loops that the [`crate::simd`] kernels do not cover (partial spans, masked words).
+macro_rules! word_kernels {
+    ($(
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident($($arg:ident : $ty:ty),* $(,)?) $(-> $ret:ty)? $body:block
+    )*) => {$(
+        $(#[$meta])*
+        #[inline]
+        $vis fn $name($($arg: $ty),*) $(-> $ret)? {
+            #[inline(always)]
+            fn generic($($arg: $ty),*) $(-> $ret)? $body
+
+            #[cfg(all(target_arch = "x86_64", not(miri)))]
+            {
+                #[target_feature(enable = "avx2,bmi1,bmi2,popcnt,sse4.2")]
+                unsafe fn avx2($($arg: $ty),*) $(-> $ret)? {
+                    generic($($arg),*)
+                }
+
+                #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512bitalg,avx512vbmi2,avx2,bmi1,bmi2,popcnt,sse4.2")]
+                unsafe fn avx512($($arg: $ty),*) $(-> $ret)? {
+                    generic($($arg),*)
+                }
+
+                match crate::simd::backend() {
+                    // SAFETY: `backend()` only reports tiers supported by the running CPU.
+                    crate::simd::SimdBackend::Avx512 => unsafe { avx512($($arg),*) },
+                    // SAFETY: as above; AVX2 is the minimum tier on x86_64.
+                    crate::simd::SimdBackend::Avx2 => unsafe { avx2($($arg),*) },
+                    crate::simd::SimdBackend::Neon => unreachable!("NEON backend on x86_64"),
+                }
+            }
+            #[cfg(not(all(target_arch = "x86_64", not(miri))))]
+            {
+                generic($($arg),*)
+            }
+        }
+    )*};
+}
+
 pub(crate) mod array;
 pub(crate) mod bitmap;
 pub(crate) mod heap;

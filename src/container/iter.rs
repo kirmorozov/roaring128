@@ -22,7 +22,7 @@
 use core::ops::RangeInclusive;
 
 use super::array::ArrayStore;
-use super::bitmap::{BitmapStore, select_in_word};
+use super::bitmap::{BitmapStore, popcount_words, select_in_word};
 use super::run::{Interval, RunStore};
 use crate::simd::{BITMAP_WORDS, Words};
 
@@ -317,10 +317,7 @@ impl<B: WordsSource> BitmapIter<B> {
     /// Sum of the popcounts of the untouched words `lo..hi`.
     #[inline]
     fn count_words(&self, lo: u16, hi: u16) -> u32 {
-        self.bits.words()[lo as usize..hi as usize]
-            .iter()
-            .map(|w| w.count_ones())
-            .sum()
+        popcount_words(&self.bits.words()[lo as usize..hi as usize]) as u32
     }
 
     #[inline]

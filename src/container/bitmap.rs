@@ -48,10 +48,54 @@ const fn span_mask(lo: u32, hi: u32) -> u64 {
     (u64::MAX << lo) & (u64::MAX >> (63 - hi))
 }
 
-/// Number of set bits of a few words (spans shorter than half a bitmap).
-#[inline]
-fn count_words(words: &[u64]) -> u64 {
-    words.iter().map(|w| w.count_ones() as u64).sum()
+word_kernels! {
+    /// Number of set bits of `words` (partial spans; whole bitmaps use
+    /// [`simd::bitmap_popcount`]).
+    pub(crate) fn popcount_words(words: &[u64]) -> u64 {
+        words.iter().map(|w| w.count_ones() as u64).sum()
+    }
+
+    /// Locates the `n`-th (0 based) set bit counted from the lowest one: returns the index of
+    /// its word and its rank among the set bits of that word. `n` must be below the popcount.
+    fn nth_from_front(words: &Words, n: u64) -> (usize, u32) {
+        let mut n = n;
+        // Popcounts of 8-word blocks vectorize; only the block holding the bit is scanned.
+        for (b, block) in words.as_chunks::<8>().0.iter().enumerate() {
+            let count: u64 = block.iter().map(|w| w.count_ones() as u64).sum();
+            if n < count {
+                for (i, &word) in block.iter().enumerate() {
+                    let c = word.count_ones() as u64;
+                    if n < c {
+                        return (b * 8 + i, n as u32);
+                    }
+                    n -= c;
+                }
+            }
+            n -= count;
+        }
+        unreachable!("n is not below the popcount")
+    }
+
+    /// Locates the `n`-th (0 based) set bit counted from the highest one: returns the index of
+    /// its word and the number of set bits of that word above it. `n` must be below the
+    /// popcount.
+    fn nth_from_back(words: &Words, n: u64) -> (usize, u32) {
+        let mut n = n;
+        for (b, block) in words.as_chunks::<8>().0.iter().enumerate().rev() {
+            let count: u64 = block.iter().map(|w| w.count_ones() as u64).sum();
+            if n < count {
+                for (i, &word) in block.iter().enumerate().rev() {
+                    let c = word.count_ones() as u64;
+                    if n < c {
+                        return (b * 8 + i, n as u32);
+                    }
+                    n -= c;
+                }
+            }
+            n -= count;
+        }
+        unreachable!("n is not below the popcount")
+    }
 }
 
 /// Position of the `n`-th (0 based) set bit of `word`; `n` must be below its popcount.
@@ -187,9 +231,9 @@ impl BitmapStore {
     fn count_span(&self, lo: usize, hi: usize) -> u64 {
         let bits = &self.0.bits;
         if hi - lo <= BITMAP_WORDS / 2 {
-            count_words(&bits[lo..hi])
+            popcount_words(&bits[lo..hi])
         } else {
-            self.0.len - count_words(&bits[..lo]) - count_words(&bits[hi..])
+            self.0.len - popcount_words(&bits[..lo]) - popcount_words(&bits[hi..])
         }
     }
 
@@ -285,22 +329,15 @@ impl BitmapStore {
             self.clear();
             return;
         }
-        self.0.len -= n;
-        let mut remaining = n;
-        for word in self.0.bits.iter_mut() {
-            if remaining == 0 {
-                return;
-            }
-            let count = word.count_ones() as u64;
-            if remaining < count {
-                for _ in 0..remaining {
-                    *word &= *word - 1;
-                }
-                return;
-            }
-            *word = 0;
-            remaining -= count;
+        if n == 0 {
+            return;
         }
+        self.0.len -= n;
+        // The `n`-th smallest value is the first one kept.
+        let (k, r) = nth_from_front(&self.0.bits, n);
+        let bits = &mut self.0.bits;
+        bits[..k].fill(0);
+        bits[k] &= u64::MAX << select_in_word(bits[k], r);
     }
 
     /// Clears the `n` biggest values (all of them if `n >= len`).
@@ -309,22 +346,16 @@ impl BitmapStore {
             self.clear();
             return;
         }
-        self.0.len -= n;
-        let mut remaining = n;
-        for word in self.0.bits.iter_mut().rev() {
-            if remaining == 0 {
-                return;
-            }
-            let count = word.count_ones() as u64;
-            if remaining < count {
-                for _ in 0..remaining {
-                    *word &= !(1 << (63 - word.leading_zeros()));
-                }
-                return;
-            }
-            *word = 0;
-            remaining -= count;
+        if n == 0 {
+            return;
         }
+        self.0.len -= n;
+        // The `n`-th biggest value is the last one kept.
+        let (k, r) = nth_from_back(&self.0.bits, n);
+        let bits = &mut self.0.bits;
+        bits[k + 1..].fill(0);
+        let word = bits[k];
+        bits[k] &= u64::MAX >> (63 - select_in_word(word, word.count_ones() - 1 - r));
     }
 
     #[inline]
@@ -381,28 +412,15 @@ impl BitmapStore {
             return None;
         }
         let bits = &self.0.bits;
-        if n < len / 2 {
-            let mut n = n;
-            for (k, &word) in bits.iter().enumerate() {
-                let count = word.count_ones() as u64;
-                if n < count {
-                    return Some((k * 64) as u16 + select_in_word(word, n as u32) as u16);
-                }
-                n -= count;
-            }
+        let (k, bit) = if n < len / 2 {
+            let (k, r) = nth_from_front(bits, n);
+            (k, select_in_word(bits[k], r))
         } else {
             // Position counted from the biggest value.
-            let mut m = len - 1 - n;
-            for (k, &word) in bits.iter().enumerate().rev() {
-                let count = word.count_ones() as u64;
-                if m < count {
-                    let bit = select_in_word(word, (count - 1 - m) as u32);
-                    return Some((k * 64) as u16 + bit as u16);
-                }
-                m -= count;
-            }
-        }
-        None
+            let (k, r) = nth_from_back(bits, len - 1 - n);
+            (k, select_in_word(bits[k], bits[k].count_ones() - 1 - r))
+        };
+        Some((k * 64) as u16 + bit as u16)
     }
 
     /// Number of set bits inside the range.
