@@ -136,7 +136,13 @@ jobs:
           if [ -n "$ROARING128_FORCE_BACKEND" ]; then args=(--expect "$ROARING128_FORCE_BACKEND"); fi
           "$PROBE" "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: cargo test --lib simd (blocking)
-        run: cargo test --lib simd
+        env:
+          MATRIX_BACKEND: ${{ matrix.backend }}
+        run: |
+          # A forced backend is also asserted by simd::tests::expected_backend_is_selected. The auto
+          # job asserts nothing: it selects whatever the runner hardware supports.
+          if [ "$MATRIX_BACKEND" != auto ]; then export ROARING128_EXPECT_BACKEND="$MATRIX_BACKEND"; fi
+          cargo test --lib simd
       # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
       - name: cargo test --all-features (non-blocking for now)
         id: full
@@ -203,6 +209,8 @@ jobs:
           cat snb.log
           grep -q 'requires an x86_64 CPU with AVX2' snb.log
       - name: cargo test --lib simd under sde -${{ matrix.cpu }} (blocking)
+        env:
+          ROARING128_EXPECT_BACKEND: avx512
         run: cargo test --lib simd
       # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
       # Doctests are skipped: they are not run through the SDE runner.
@@ -243,7 +251,23 @@ jobs:
         run: |
           "$PROBE" --expect neon | tee -a "$GITHUB_STEP_SUMMARY"
       - name: cargo test --lib simd (blocking)
+        env:
+          ROARING128_EXPECT_BACKEND: neon
         run: cargo test --lib simd
+      # Real-hardware NEON numbers (scalar reference vs neon per kernel), for the log and summary.
+      - name: NEON kernel timings (non-blocking)
+        id: timings
+        continue-on-error: true
+        run: |
+          cargo test --release --lib simd::tests::kernel_timings -- --ignored --nocapture | tee timings.log
+          {
+            echo "<details><summary>kernel timings ($RUNNER_OS $RUNNER_ARCH)</summary>"
+            echo
+            echo '```'
+            grep -E ' ns$' timings.log || true
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
       # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
       - name: cargo test --all-features (non-blocking for now)
         id: full
@@ -252,7 +276,11 @@ jobs:
       - name: Report non-blocking results
         if: always()
         run: |
+          echo "kernel timings: ${{ steps.timings.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "full test suite: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.timings.outcome }}" != "success" ]; then
+            echo "::warning title=kernel timings (non-blocking)::kernel_timings: ${{ steps.timings.outcome }}"
+          fi
           if [ "${{ steps.full.outcome }}" != "success" ]; then
             echo "::warning title=full test suite (non-blocking)::cargo test --all-features: ${{ steps.full.outcome }}"
           fi
