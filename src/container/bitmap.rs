@@ -589,7 +589,12 @@ impl BitmapStore {
 
     /// The array of `a op b`, whose cardinality `card` is already known (and small): the
     /// result is computed into a stack buffer and extracted with the vectorized kernel.
-    pub(crate) fn op_to_array(op: BitOp, a: &BitmapStore, b: &BitmapStore, card: u64) -> ArrayStore {
+    pub(crate) fn op_to_array(
+        op: BitOp,
+        a: &BitmapStore,
+        b: &BitmapStore,
+        card: u64,
+    ) -> ArrayStore {
         let mut tmp: Words = [0; BITMAP_WORDS];
         let n = simd::bitmap_op(op, &a.0.bits, &b.0.bits, &mut tmp) as u64;
         debug_assert_eq!(n, card);

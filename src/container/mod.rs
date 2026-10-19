@@ -367,9 +367,7 @@ impl Container {
             (Container::Array(a), Container::Array(b)) => a.intersection_len(b),
             (Container::Bitmap(a), Container::Bitmap(b)) => a.intersection_len(b),
             (Container::Array(a), Container::Bitmap(b))
-            | (Container::Bitmap(b), Container::Array(a)) => {
-                b.intersection_len_array(a.as_slice())
-            }
+            | (Container::Bitmap(b), Container::Array(a)) => b.intersection_len_array(a.as_slice()),
         }
     }
 

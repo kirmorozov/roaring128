@@ -66,8 +66,9 @@ impl Rng {
         const EDGES: [u16; 10] = [0, 1, 63, 64, 127, 4095, 4096, 32767, 65534, 65535];
         match self.below(4) {
             0 if !model.is_empty() => {
-                let n = self.below(model.len() as u64) as usize;
-                let v = *model.iter().nth(n).unwrap();
+                // A present value (the successor of a random one) or one of its neighbours.
+                let from = self.u16();
+                let v = *model.range(from..).next().unwrap_or(model.last().unwrap());
                 v.wrapping_add(self.below(3) as u16).wrapping_sub(1)
             }
             1 => EDGES[self.below(EDGES.len() as u64) as usize],
@@ -90,61 +91,76 @@ impl Rng {
     }
 }
 
+/// Picks `count` distinct offsets in `0..width` (marked in `bits` from `lo`), by sampling the
+/// smaller of the set and its complement.
+fn sample(rng: &mut Rng, bits: &mut [bool], lo: usize, width: usize, count: usize) {
+    let count = count.min(width);
+    let window = &mut bits[lo..lo + width];
+    let invert = count > width / 2;
+    let picks = if invert { width - count } else { count };
+    window.fill(invert);
+    let mut picked = 0;
+    while picked < picks {
+        let i = rng.below(width as u64) as usize;
+        if window[i] == invert {
+            window[i] = !invert;
+            picked += 1;
+        }
+    }
+}
+
 /// A random set of about `n` values with one of several shapes.
 pub(crate) fn random_set(rng: &mut Rng, n: usize) -> Model {
-    let mut set = Model::new();
+    let n = n.min(65536);
     if n == 0 {
-        return set;
+        return Model::new();
     }
+    let mut bits = alloc::vec![false; 65536];
     match rng.below(5) {
         // Uniform over the whole container.
-        0 => {
-            while set.len() < n.min(65536) {
-                set.insert(rng.u16());
-            }
-        }
+        0 => sample(rng, &mut bits, 0, 65536, n),
         // Clustered in a window.
         1 => {
-            let width = (n as u64 * (1 + rng.below(4))).clamp(1, 65536);
-            let lo = rng.below(65536 - width + 1);
-            let target = n.min(width as usize);
-            while set.len() < target {
-                set.insert((lo + rng.below(width)) as u16);
-            }
+            let width = (n * (1 + rng.below(4) as usize)).min(65536);
+            let lo = rng.below((65536 - width + 1) as u64) as usize;
+            sample(rng, &mut bits, lo, width, n);
         }
         // Runs of consecutive values.
         2 => {
-            while set.len() < n.min(65536) {
-                let start = rng.u16() as u64;
-                let len = 1 + rng.below(1 + (n as u64 / 4).min(3000));
-                for v in start..(start + len).min(65536) {
-                    set.insert(v as u16);
+            let mut count = 0;
+            while count < n {
+                let start = rng.below(65536) as usize;
+                let len = 1 + rng.below(1 + (n as u64 / 4).min(3000)) as usize;
+                for b in &mut bits[start..(start + len).min(65536)] {
+                    count += !*b as usize;
+                    *b = true;
                 }
             }
         }
-        // Dense prefix or suffix (whole words, word boundaries, container edges).
+        // Dense prefix or suffix (whole words, word boundaries, container edges) with a few
+        // holes.
         3 => {
-            let from_top = rng.chance(50);
-            let n = n.min(65536);
-            for i in 0..n {
-                let v = if from_top { 65535 - i } else { i };
-                set.insert(v as u16);
-            }
-            // Punch a few holes.
+            let range = if rng.chance(50) {
+                65536 - n..65536
+            } else {
+                0..n
+            };
+            let lo = range.start;
+            bits[range].fill(true);
             for _ in 0..rng.below(8) {
-                set.remove(&(rng.below(n as u64) as u16));
+                bits[lo + rng.below(n as u64) as usize] = false;
             }
         }
         // Every k-th value.
         _ => {
-            let step = 1 + rng.below(16);
-            let start = rng.below(step);
-            for v in (start..65536).step_by(step as usize).take(n) {
-                set.insert(v as u16);
+            let step = 1 + rng.below(16) as usize;
+            let start = rng.below(step as u64) as usize;
+            for v in (start..65536).step_by(step).take(n) {
+                bits[v] = true;
             }
         }
     }
-    set
+    (0..=u16::MAX).filter(|&v| bits[v as usize]).collect()
 }
 
 /// A cardinality drawn from the interesting classes (inline, heap array, boundary, bitmap).
@@ -302,7 +318,11 @@ fn check_queries(rng: &mut Rng, c: &Container, model: &Model) {
         );
         let r = rng.range(model);
         let in_range = model.range(r.clone()).count();
-        assert_eq!(c.range_cardinality(r.clone()), in_range as u64, "range_cardinality({r:?})");
+        assert_eq!(
+            c.range_cardinality(r.clone()),
+            in_range as u64,
+            "range_cardinality({r:?})"
+        );
         assert_eq!(
             c.contains_range(r.clone()),
             in_range == model_range(&r),
@@ -354,7 +374,11 @@ fn point_ops(rng: &mut Rng, model: &mut Model, c: &mut Container, steps: usize, 
                 }
                 let added = model_range(&r) - model.range(r.clone()).count();
                 model.extend(r.clone());
-                assert_eq!(c.insert_range(r.clone()), added as u64, "insert_range({r:?})");
+                assert_eq!(
+                    c.insert_range(r.clone()),
+                    added as u64,
+                    "insert_range({r:?})"
+                );
             }
             5 => {
                 let r = rng.range(model);
@@ -362,11 +386,17 @@ fn point_ops(rng: &mut Rng, model: &mut Model, c: &mut Container, steps: usize, 
                 for v in &removed {
                     model.remove(v);
                 }
-                assert_eq!(c.remove_range(r.clone()), removed.len() as u64, "remove_range({r:?})");
+                assert_eq!(
+                    c.remove_range(r.clone()),
+                    removed.len() as u64,
+                    "remove_range({r:?})"
+                );
             }
             6 => {
                 let v = if rng.chance(50) {
-                    model.last().map_or(0, |m| m.saturating_add(1 + rng.below(3) as u16))
+                    model
+                        .last()
+                        .map_or(0, |m| m.saturating_add(1 + rng.below(3) as u16))
                 } else {
                     rng.value(model)
                 };
@@ -527,7 +557,10 @@ fn related_set(rng: &mut Rng, a: &Model) -> Model {
         1 => a.iter().copied().filter(|_| rng.chance(70)).collect(),
         2 => {
             let mut b = a.clone();
-            b.extend({ let n = random_len(rng) / 4; random_set(rng, n) });
+            b.extend({
+                let n = random_len(rng) / 4;
+                random_set(rng, n)
+            });
             b
         }
         3 => {
@@ -601,7 +634,11 @@ fn check_set_ops(rng: &mut Rng, ma: &Model, a: &Container, mb: &Model, b: &Conta
     assert_eq!(b.is_disjoint(a), inter.is_empty(), "is_disjoint (swapped)");
     assert_eq!(a.is_subset(b), ma.is_subset(mb), "is_subset");
     assert_eq!(b.is_subset(a), mb.is_subset(ma), "is_subset (swapped)");
-    assert_eq!(a.intersection_len(b), inter.len() as u64, "intersection_len");
+    assert_eq!(
+        a.intersection_len(b),
+        inter.len() as u64,
+        "intersection_len"
+    );
     assert_eq!(b.intersection_len(a), inter.len() as u64);
     assert_eq!(a.eq_values(b), ma == mb, "eq_values");
     assert_eq!(a == b, ma == mb);
@@ -644,7 +681,11 @@ fn check_set_ops(rng: &mut Rng, ma: &Model, a: &Container, mb: &Model, b: &Conta
     lazy.repair_lazy();
     check(&lazy, &model);
     check(&exact, &model);
-    assert_eq!(lazy.kind(), exact.kind(), "lazy symmetric difference representation");
+    assert_eq!(
+        lazy.kind(),
+        exact.kind(),
+        "lazy symmetric difference representation"
+    );
 }
 
 fn set_ops_suite(seed: u64, runs: bool) {
@@ -803,7 +844,9 @@ fn from_lsb0_bytes_out_of_bounds() {
 fn decode_payload(kind: Kind, descriptor: u16, bytes: &[u8]) -> Vec<u16> {
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
     match kind {
-        Kind::Array => (0..descriptor as usize + 1).map(|i| u16_at(2 * i)).collect(),
+        Kind::Array => (0..descriptor as usize + 1)
+            .map(|i| u16_at(2 * i))
+            .collect(),
         Kind::Bitmap => {
             assert_eq!(bytes.len(), BITMAP_BYTES);
             let mut out = Vec::new();
@@ -839,7 +882,11 @@ fn check_serialization(c: &Container, model: &Model) {
 fn serialization_suite(seed: u64, runs: bool) {
     let mut rng = Rng::new(seed);
     for _ in 0..cases(150) {
-        let model = { let n = random_len(&mut rng).max(1); random_set(&mut rng, n) };
+        let model = random_model(&mut rng);
+        if model.is_empty() {
+            // Empty containers are never serialized.
+            continue;
+        }
         for repr in reprs_for(model.len(), runs) {
             if runs && repr != Repr::Run {
                 continue;
@@ -922,7 +969,12 @@ fn iterator_suite(seed: u64, runs: bool) {
             assert!(c.iter().eq(expected.iter().copied()));
             assert!(c.iter().rev().eq(expected.iter().rev().copied()));
             assert!(c.clone().into_iter().eq(expected.iter().copied()));
-            assert!(c.clone().into_iter().rev().eq(expected.iter().rev().copied()));
+            assert!(
+                c.clone()
+                    .into_iter()
+                    .rev()
+                    .eq(expected.iter().rev().copied())
+            );
             super::iter::tests::random_walk(&mut rng, &expected, || c.iter());
             super::iter::tests::random_walk(&mut rng, &expected, || c.clone().into_iter());
         }
@@ -994,7 +1046,10 @@ fn roaring_oracle_array_bitmap() {
         if ma.len() == 65536 || mb.len() == 65536 {
             continue;
         }
-        let (a, b) = (make(&ma, reprs_for(ma.len(), false)[0]), make(&mb, Repr::Heap));
+        let (a, b) = (
+            make(&ma, reprs_for(ma.len(), false)[0]),
+            make(&mb, Repr::Heap),
+        );
         let b = if mb.len() as u64 > ARRAY_LIMIT {
             make(&mb, Repr::Bitmap)
         } else {
@@ -1022,6 +1077,13 @@ fn roaring_oracle_array_bitmap() {
             let r = rng.range(&ma);
             if rng.chance(50) {
                 assert_eq!(c.remove_range(r.clone()), rc.remove_range(range32(&r)));
+            } else if c.is_empty() {
+                // The top level drops empty containers and creates new ones with
+                // `Container::from_range` (a run above two values), like roaring.
+                if model_range(&r) <= 2 {
+                    c = Container::from_range(r.clone());
+                    assert_eq!(c.len(), rc.insert_range(range32(&r)));
+                }
             } else if !fills(&contents(&c).into_iter().collect(), &r) {
                 assert_eq!(c.insert_range(r.clone()), rc.insert_range(range32(&r)));
             }
@@ -1040,7 +1102,7 @@ fn range32(r: &RangeInclusive<u16>) -> RangeInclusive<u32> {
 fn run_optimize_matches_roaring() {
     let mut rng = Rng::new(0x000C);
     for _ in 0..cases(400) {
-        let model = { let n = random_len(&mut rng).max(1); random_set(&mut rng, n) };
+        let model = random_model(&mut rng);
         let mut c = Container::from_sorted_unchecked(&model.iter().copied().collect::<Vec<_>>());
         let mut rb = roaring_of(&model);
         assert_same_as_roaring(&c, &rb);
@@ -1062,7 +1124,10 @@ fn run_optimize_matches_roaring() {
         assert_same_as_roaring(&c3, &rb3);
         let v = rng.value(&model);
         assert_eq!(c3.insert(v), rb3.insert(v as u32));
-        assert_eq!(c3.remove(v.wrapping_add(7)), rb3.remove(v.wrapping_add(7) as u32));
+        assert_eq!(
+            c3.remove(v.wrapping_add(7)),
+            rb3.remove(v.wrapping_add(7) as u32)
+        );
         assert_same_as_roaring(&c3, &rb3);
         assert_eq!(c3.optimize(), rb3.optimize());
         assert_same_as_roaring(&c3, &rb3);

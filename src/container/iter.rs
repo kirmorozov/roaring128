@@ -606,7 +606,11 @@ impl<B: WordsSource> BitmapIter<B> {
             self.step_back();
             let word = self.back_word_mut();
             let ones = word.leading_ones();
-            *word = if ones < 64 { *word & (u64::MAX >> ones) } else { 0 };
+            *word = if ones < 64 {
+                *word & (u64::MAX >> ones)
+            } else {
+                0
+            };
             start -= ones;
             self.len -= ones;
             if ones < 64 {
@@ -1178,7 +1182,9 @@ pub(crate) mod tests {
     use crate::container::tests::{Model, Rng, cases, intervals_of, random_model};
 
     /// The container iterator API, so that both iterators can be tested generically.
-    pub(crate) trait Walk: DoubleEndedIterator<Item = u16> + ExactSizeIterator + Clone {
+    pub(crate) trait Walk:
+        DoubleEndedIterator<Item = u16> + ExactSizeIterator + Clone
+    {
         fn advance_to(&mut self, n: u16);
         fn advance_back_to(&mut self, n: u16);
         fn next_range(&mut self) -> Option<RangeInclusive<u16>>;
@@ -1470,7 +1476,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn run_slice_iterators() {
+    fn interval_slice_iterators() {
         let mut rng = Rng::new(0x1005);
         for values in all_sets(0x1006) {
             let intervals = intervals_of(&values);
@@ -1479,7 +1485,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn run_length_helpers() {
+    fn contiguous_length_helpers() {
         assert_eq!(first_run_len(&[5]), 1);
         assert_eq!(first_run_len(&[5, 6, 7, 9]), 3);
         assert_eq!(first_run_len(&[5, 7]), 1);
@@ -1493,7 +1499,9 @@ pub(crate) mod tests {
             let mut v = full.clone();
             v.remove(split);
             assert_eq!(first_run_len(&v), split);
-            assert_eq!(last_run_len(&v), 65535 - split);
+            // Removing the last value leaves a single run of 65535 values.
+            let last = if split == 65535 { 65535 } else { 65535 - split };
+            assert_eq!(last_run_len(&v), last);
         }
     }
 

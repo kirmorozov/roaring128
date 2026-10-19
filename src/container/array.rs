@@ -521,7 +521,11 @@ fn is_strictly_increasing(values: &[u16]) -> bool {
     values[1..]
         .chunks(256)
         .zip(values.chunks(256))
-        .all(|(next, prev)| next.iter().zip(prev).fold(true, |ok, (&n, &p)| ok & (p < n)))
+        .all(|(next, prev)| {
+            next.iter()
+                .zip(prev)
+                .fold(true, |ok, (&n, &p)| ok & (p < n))
+        })
 }
 
 impl Default for ArrayStore {
