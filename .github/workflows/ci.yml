@@ -34,7 +34,7 @@ defaults:
 jobs:
   fmt:
     name: fmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
@@ -46,7 +46,7 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -67,7 +67,7 @@ jobs:
 
   check:
     name: check (${{ matrix.target }}, ${{ matrix.features }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -87,7 +87,7 @@ jobs:
 
   msrv:
     name: msrv (1.91)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -97,7 +97,7 @@ jobs:
 
   docs:
     name: docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       # The docs build is warning-free today; keep it that way (broken intra-doc links etc.).
@@ -110,7 +110,7 @@ jobs:
 
   test-x86:
     name: test-x86 (backend ${{ matrix.backend }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -152,7 +152,7 @@ jobs:
 
   test-avx512-sde:
     name: test-avx512-sde (sde -${{ matrix.cpu }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -259,7 +259,7 @@ jobs:
 
   miri:
     name: miri
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
