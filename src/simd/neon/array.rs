@@ -38,6 +38,21 @@ unsafe fn load(p: *const u16) -> uint16x8_t {
     unsafe { vld1q_u16(p) }
 }
 
+/// The last value of the 8-value block at `p`, read with a scalar load.
+///
+/// The block maxima decide the next load addresses, so they sit on the loop-carried dependency
+/// chain of the block loops. The read is volatile only to stop LLVM from turning it into a lane
+/// extract (`umov`) of the vector load of the same block, which is several cycles slower than a
+/// direct `ldrh`.
+///
+/// # Safety
+/// `p` must be valid for reading 8 values.
+#[inline(always)]
+unsafe fn block_max(p: *const u16) -> u16 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { p.add(LANES - 1).read_volatile() }
+}
+
 /// Lanes of `a` that are equal to some lane of `b`.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -201,8 +216,8 @@ fn intersect_blocks(
             (
                 load(pa.add(i)),
                 load(pb.add(j)),
-                *pa.add(i + LANES - 1),
-                *pb.add(j + LANES - 1),
+                block_max(pa.add(i)),
+                block_max(pb.add(j)),
             )
         };
         if !f(va, matrix_eq(va, vb)) {
@@ -400,8 +415,8 @@ pub(super) fn difference(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> 
                 (
                     load(pa.add(i)),
                     load(pb.add(j)),
-                    *pa.add(i + LANES - 1),
-                    *pb.add(j + LANES - 1),
+                    block_max(pa.add(i)),
+                    block_max(pb.add(j)),
                 )
             };
             found = vorrq_u16(found, matrix_eq(va, vb));

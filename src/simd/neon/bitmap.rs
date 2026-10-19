@@ -276,20 +276,24 @@ pub(super) fn to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
         assert!(n <= cap - k, "bitmap_to_array: output buffer too small");
         if n >= DENSE_CHUNK_BITS && cap - k - n >= 8 {
             // Every byte stores the 8 lanes `base + BIT_POSITIONS[byte]` and advances by its
-            // popcount. The last store ends before `k + n + 8 <= cap`.
+            // popcount. The last store ends before `k + n + 8 <= cap`. The position is kept in
+            // bytes so that the doubling folds into the `add` (`str q` has no 2-byte scaling).
             let mut base = vdupq_n_u16((first * 64) as u16);
+            let mut offset = 2 * k;
             for &w in words {
                 for byte in 0..8 {
                     let b = (w >> (8 * byte)) as u8 as usize;
-                    // SAFETY: the table entry has 8 bytes; `k + 8 <= cap` as shown above.
+                    // SAFETY: the table entry has 8 bytes; `offset / 2 + 8 <= cap` as shown above.
                     unsafe {
                         let pos = vld1_u8(BIT_POSITIONS.0[b].as_ptr());
-                        vst1q_u16(dst.add(k), vaddw_u8(base, pos));
+                        let p = dst.cast::<u8>().add(offset).cast::<u16>();
+                        vst1q_u16(p, vaddw_u8(base, pos));
                     }
-                    k += POPCOUNT.0[b] as usize;
+                    offset += 2 * POPCOUNT.0[b] as usize;
                     base = vaddq_u16(base, eight);
                 }
             }
+            k = offset / 2;
         } else {
             for (i, &w) in words.iter().enumerate() {
                 let base = ((first + i) * 64) as u16;
