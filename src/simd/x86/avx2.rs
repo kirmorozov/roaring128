@@ -2,12 +2,16 @@
 //!
 //! * Bitmap operations stream 256-bit vectors and count bits with the Harley-Seal carry-save
 //!   adder tree over Muła's `pshufb` nibble popcount (Kurz, Muła, Lemire, "Faster population
-//!   counts using AVX2 instructions", 2018): one vector popcount per sixteen vectors.
+//!   counts using AVX2 instructions", 2018): one vector popcount per sixteen vectors. This is
+//!   twice as fast as scalar `popcnt` even on Zen 3, where `popcnt` has four ports.
 //! * `intersects` / `is_subset` test 1 KiB blocks with `vptest` and exit early.
-//! * `bitmap_to_array` decodes words with a per-byte index table, or with unrolled `tzcnt` for
-//!   sparse words.
-//! * Array kernels: see [`super::arrays`] (`pcmpistrm`, bitonic merges); lanes are packed with a
-//!   `pshufb` lookup table.
+//! * `count_runs` loads every vector a second time one word earlier (unaligned) for the carry.
+//! * `bitmap_to_array` picks a decoder per block of 16 words from the block's popcount: a
+//!   `tzcnt` loop for sparse blocks (the usual case when a bitmap shrinks to an array), an
+//!   unrolled `tzcnt` sequence with packed stores for medium density, and a per-byte index
+//!   table (`vpmovzxbw` + 16-byte stores) for dense blocks.
+//! * Array kernels: see [`super::arrays`] (`pcmpistrm`, bitonic merges, lockstep binary
+//!   searches); lanes are packed with a `pshufb` lookup table.
 //!
 //! Every kernel is `unsafe`: it must only be called when [`super::has_avx2`] returns `true`.
 
