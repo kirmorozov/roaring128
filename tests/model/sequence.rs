@@ -24,8 +24,17 @@ enum Op {
     Binary(SetOp, Form, SetSpec),
     MultiUnion(Vec<SetSpec>),
     CloneFrom(SetSpec),
+    #[cfg(feature = "std")]
     SerializeRoundTrip,
     Clear,
+}
+
+/// A serialization round trip (an empty `Extend` without `std`).
+fn serialize_op() -> Op {
+    #[cfg(feature = "std")]
+    return Op::SerializeRoundTrip;
+    #[cfg(not(feature = "std"))]
+    return Op::Extend(Vec::new());
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -44,7 +53,7 @@ fn op() -> impl Strategy<Value = Op> {
         4 => (set_op(), form(), set_spec_with(3)).prop_map(|(o, f, s)| Op::Binary(o, f, s)),
         1 => vec(set_spec_with(2), 0..3).prop_map(Op::MultiUnion),
         1 => set_spec_with(2).prop_map(Op::CloneFrom),
-        1 => Just(Op::SerializeRoundTrip),
+        1 => Just(serialize_op()),
         1 => Just(Op::Clear),
     ]
 }
@@ -158,6 +167,7 @@ fn apply(rb: &mut RoaringBitmap128, model: &mut Model, op: &Op) {
             rb.clone_from(&other);
             *model = other_model;
         }
+        #[cfg(feature = "std")]
         Op::SerializeRoundTrip => {
             *rb = round_trip(rb);
         }
@@ -185,7 +195,7 @@ proptest! {
             prop_assert_eq!(rb.contains(v), model.contains(&v));
             prop_assert_eq!(rb.rank(v), rank_in(&all, v));
         }
-        let back = round_trip(&rb);
-        assert_matches(&back, &model);
+        #[cfg(feature = "std")]
+        assert_matches(&round_trip(&rb), &model);
     }
 }

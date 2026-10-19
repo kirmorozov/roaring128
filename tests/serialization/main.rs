@@ -11,6 +11,8 @@
 //! Inputs with oversized container counts are in the separate `serialization_limits` binary so
 //! that an allocation failure (abort) there cannot hide the results of this binary.
 
+#![cfg(feature = "std")]
+
 #[macro_use]
 #[path = "../common/mod.rs"]
 mod common;

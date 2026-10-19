@@ -1275,6 +1275,7 @@ where
 // -------------------------------------------------------------------------------------------------
 
 /// `serialize_into` into a vector, checking `serialized_size`.
+#[cfg(feature = "std")]
 #[track_caller]
 pub fn serialize(rb: &RoaringBitmap128) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -1289,6 +1290,7 @@ pub fn serialize(rb: &RoaringBitmap128) -> Vec<u8> {
 }
 
 /// Serializes, checks the size, deserializes (checked and unchecked) and validates.
+#[cfg(feature = "std")]
 #[track_caller]
 pub fn round_trip(rb: &RoaringBitmap128) -> RoaringBitmap128 {
     let buf = serialize(rb);

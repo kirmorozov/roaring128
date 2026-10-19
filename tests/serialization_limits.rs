@@ -8,6 +8,8 @@
 //! allocation would abort the process. This binary is separate from `serialization` for that
 //! reason.
 
+#![cfg(feature = "std")]
+
 #[macro_use]
 mod common;
 
