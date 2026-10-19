@@ -33,6 +33,14 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "ops"
 harness = false
 
+[[bench]]
+name = "setops"
+harness = false
+
+[[bench]]
+name = "memory"
+harness = false
+
 [profile.bench]
 debug = true
 
