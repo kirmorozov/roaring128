@@ -3,8 +3,10 @@
 //! Each submodule exposes the same set of `unsafe` kernels as [`super::scalar`]. Callers must
 //! only invoke them when the corresponding `has_*` function returns `true`.
 
+mod arrays;
 pub(crate) mod avx2;
 pub(crate) mod avx512;
+mod tables;
 
 /// AVX2 tier (the `x86-64-v3` integer subset): POPCNT + SSE4.2 + AVX + AVX2 + BMI1 + BMI2.
 #[inline]
@@ -61,7 +63,9 @@ pub(crate) fn has_avx512() -> bool {
 }
 
 /// Defines `unsafe` kernels that re-instantiate the scalar reference code with the given target
-/// features enabled. Used for kernels a backend does not (yet) specialize.
+/// features enabled (compiler auto-vectorization only). Every kernel is specialized now; the
+/// tests use this as the "auto-vectorized reference" baseline of the timing comparison.
+#[cfg(test)]
 macro_rules! scalar_kernels {
     ($features:literal => $($name:ident($($arg:ident : $ty:ty),*) $(-> $ret:ty)?;)*) => {
         $(
@@ -73,4 +77,5 @@ macro_rules! scalar_kernels {
         )*
     };
 }
+#[cfg(test)]
 pub(crate) use scalar_kernels;
