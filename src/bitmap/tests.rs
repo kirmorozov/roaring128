@@ -702,6 +702,55 @@ fn extend_sorted_then_unsorted() {
     check(&rb, &model);
 }
 
+/// A deterministic pseudo-random sequence (splitmix64).
+fn scrambled(seed: u64, n: usize) -> impl Iterator<Item = u128> {
+    let mut state = seed;
+    let mut next = move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    (0..n).map(move |_| ((next() as u128) << 64) | next() as u128)
+}
+
+#[test]
+fn extend_unsorted_batches() {
+    // Sparse random values: several sorted batches merged into a growing index.
+    let values: Vec<u128> = scrambled(1, 30_000).collect();
+    let rb: RoaringBitmap128 = values.iter().copied().collect();
+    let model: Model = values.iter().copied().collect();
+    check(&rb, &model);
+
+    // Random values landing in existing containers (unions with owned batch containers), with
+    // duplicates, into a pre-populated index.
+    let mut rb = build(&model);
+    let mut model = model;
+    let clustered: Vec<u128> = scrambled(2, 20_000)
+        .map(|v| join((v % 500) * 7, (v >> 64) as u16 % 3000))
+        .chain(values.iter().copied().step_by(5))
+        .collect();
+    rb.extend(clustered.iter().copied());
+    model.extend(clustered.iter().copied());
+    check(&rb, &model);
+
+    // Dense unsorted values (keys rarely change): direct insertion path.
+    let dense: Vec<u128> = (0..40_000u128)
+        .map(|i| join(i / 10_000 + 3, ((i * 7919) % 10_000) as u16))
+        .collect();
+    let mut rb2 = build(&(0..5).collect());
+    let mut model2: Model = (0..5).collect();
+    rb2.extend(dense.iter().rev().copied());
+    model2.extend(dense.iter().copied());
+    check(&rb2, &model2);
+
+    // A few values into a big index: point updates.
+    rb.extend([5u128, u128::MAX, 3, join(77, 1)]);
+    model.extend([5u128, u128::MAX, 3, join(77, 1)]);
+    check(&rb, &model);
+}
+
 #[cfg(feature = "std")]
 #[test]
 fn extend_is_panic_safe() {

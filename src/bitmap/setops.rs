@@ -329,9 +329,22 @@ impl RoaringBitmap128 {
         let Some((lo, hi)) = span(&other.map) else {
             return;
         };
+        let count = other.containers();
+        self.union_owned_entries(other.map.into_iter(), count, lo, hi);
+    }
+
+    /// Unions `count` owned containers with strictly increasing keys spanning `lo..=hi` into
+    /// `self`, reusing their allocations.
+    pub(crate) fn union_owned_entries(
+        &mut self,
+        entries: impl Iterator<Item = (u128, Container)>,
+        count: usize,
+        lo: u128,
+        hi: u128,
+    ) {
         let RoaringBitmap128 { map, len } = self;
-        if is_skewed(other.containers(), map.len()) {
-            for (k, b) in other.map {
+        if is_skewed(count, map.len()) {
+            for (k, b) in entries {
                 match map.entry(k) {
                     Entry::Vacant(entry) => {
                         *len += b.len();
@@ -347,7 +360,8 @@ impl RoaringBitmap128 {
             }
             return;
         }
-        let mut theirs = other.map.into_iter().peekable();
+        // Update the common containers in place, collect the new ones.
+        let mut theirs = entries.peekable();
         let mut new = Vec::new();
         for (&k, a) in map.range_mut(lo..=hi) {
             while let Some((kb, b)) = theirs.next_if(|(kb, _)| *kb < k) {

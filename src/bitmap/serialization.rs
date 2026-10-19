@@ -253,7 +253,10 @@ impl RoaringBitmap128 {
         let n = self.map.len();
         let has_runs = self.map.values().any(|c| c.kind() == Kind::Run);
 
-        let mut buf = Vec::with_capacity(WRITE_CHUNK.min(self.serialized_size()) + 64);
+        // The buffer is flushed at WRITE_CHUNK; small bitmaps get a small buffer (header,
+        // descriptors and at least two bytes of payload per container).
+        let estimate = HEADER_BYTES + n.div_ceil(8) + n * (DESCRIPTOR_BYTES + 2);
+        let mut buf = Vec::with_capacity(WRITE_CHUNK.min(estimate) + 64);
         buf.extend_from_slice(&COOKIE.to_le_bytes());
         let flags = if has_runs { FLAG_RUN_BITSET } else { 0 };
         buf.extend_from_slice(&flags.to_le_bytes());

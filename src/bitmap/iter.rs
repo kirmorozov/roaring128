@@ -1046,14 +1046,67 @@ impl RoaringBitmap128 {
         Ok(appender.added)
     }
 
-    /// Inserts values in any order, batching consecutive values of the same key so that the
-    /// B-tree is only searched when the key changes.
-    fn extend_unsorted(&mut self, first: u128, rest: impl Iterator<Item = u128>) {
+    /// Inserts values in any order.
+    ///
+    /// Values are buffered in batches. A batch whose consecutive values mostly share their key
+    /// (dense data) is inserted directly, searching the B-tree once per run of equal keys. A
+    /// batch of scattered keys (sparse data such as random UUIDs) is sorted and turned into
+    /// containers that are merged in one pass ([`Self::union_owned_entries`]) instead of one
+    /// random B-tree descent per value. The batch size follows the size of the index (between
+    /// [`EXTEND_BATCH_MIN`] and [`EXTEND_BATCH_MAX`] values) so that linear merges stay
+    /// amortized.
+    fn extend_unsorted(&mut self, first: u128, mut rest: impl Iterator<Item = u128>) {
+        let mut batch: Vec<u128> = Vec::new();
+        let mut first = Some(first);
+        loop {
+            let capacity = self.map.len().clamp(EXTEND_BATCH_MIN, EXTEND_BATCH_MAX);
+            batch.clear();
+            batch.extend(first.take());
+            batch.extend(rest.by_ref().take(capacity - batch.len()));
+            let filled = batch.len() == capacity;
+            if batch.is_empty() {
+                return;
+            }
+            self.insert_batch(&mut batch);
+            if !filled {
+                return;
+            }
+        }
+    }
+
+    fn insert_batch(&mut self, values: &mut Vec<u128>) {
+        let key_changes = values
+            .windows(2)
+            .filter(|w| split(w[0]).0 != split(w[1]).0)
+            .count();
+        if values.len() < 16 || key_changes * 8 < values.len() {
+            return self.insert_runs(values);
+        }
+        values.sort_unstable();
+        values.dedup();
+        let mut entries = Vec::new();
+        let mut indices: Vec<u16> = Vec::new();
+        for run in values.chunk_by(|a, b| split(*a).0 == split(*b).0) {
+            indices.clear();
+            indices.extend(run.iter().map(|&v| split(v).1));
+            entries.push((split(run[0]).0, Container::from_sorted_unchecked(&indices)));
+        }
+        let lo = split(values[0]).0;
+        let hi = split(values[values.len() - 1]).0;
+        let count = entries.len();
+        self.union_owned_entries(entries.into_iter(), count, lo, hi);
+    }
+
+    /// Inserts values one by one, searching the B-tree only when the key changes.
+    fn insert_runs(&mut self, values: &[u128]) {
         let RoaringBitmap128 { map, len } = self;
+        let Some((&first, rest)) = values.split_first() else {
+            return;
+        };
         let (mut current_key, index) = split(first);
         let mut container = map.entry(current_key).or_default();
         *len += container.insert(index) as u64;
-        for value in rest {
+        for &value in rest {
             let (key, index) = split(value);
             if key != current_key {
                 current_key = key;
@@ -1063,6 +1116,11 @@ impl RoaringBitmap128 {
         }
     }
 }
+
+/// Smallest batch of `extend` (values).
+const EXTEND_BATCH_MIN: usize = 1 << 12;
+/// Largest batch of `extend` (values, 64 MiB).
+const EXTEND_BATCH_MAX: usize = 1 << 22;
 
 /// Appends strictly increasing values above the maximum of a bitmap.
 ///
