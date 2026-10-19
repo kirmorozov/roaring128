@@ -5,7 +5,6 @@
 //! `deserialize_from`) every container, reads in bounded chunks and never allocates more than a
 //! small constant factor of what the input actually provided, whatever the announced counts.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::io;
 
@@ -13,7 +12,7 @@ use crate::RoaringBitmap128;
 use crate::container::{
     ARRAY_LIMIT, ArrayStore, BITMAP_BYTES, BitmapStore, Container, Interval, Kind, RunStore,
 };
-use crate::simd::{BITMAP_WORDS, Words};
+use crate::simd::Words;
 
 /// `"RR18"` in memory order.
 pub(crate) const COOKIE: u32 = 0x3831_5252;
@@ -106,40 +105,31 @@ pub(crate) fn payload_size(low: u16, is_run: bool) -> usize {
     }
 }
 
-/// How the bitmap store constructors take their words: `&Words` (copied into the store's own
-/// aligned block) or an owned `Box<Words>`. Lets this module build against either form of the
-/// container constructors.
-trait WordsArg<'a> {
-    fn from_words(words: &'a Words) -> Self;
-}
-
-impl<'a> WordsArg<'a> for &'a Words {
-    #[inline]
-    fn from_words(words: &'a Words) -> Self {
-        words
+/// Reads a bitmap payload straight into the store's own (64-byte aligned) block: no
+/// intermediate buffer, no copy.
+fn read_bitmap<R: io::Read>(reader: &mut R, len: u64, validate: bool) -> io::Result<BitmapStore> {
+    let mut store = BitmapStore::new();
+    let words: &mut Words = store.as_words_mut();
+    // SAFETY: `Words` is `[u64; BITMAP_WORDS]`, exactly `BITMAP_BYTES` bytes of plain integers:
+    // viewing it as bytes is in bounds, `u8` has no alignment requirement and every byte
+    // pattern is a valid `u64`. `words` is not used while `bytes` is alive.
+    let bytes: &mut [u8] =
+        unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), BITMAP_BYTES) };
+    reader.read_exact(bytes)?;
+    // The payload is little-endian; this is a no-op on the supported (little-endian) targets.
+    for word in words.iter_mut() {
+        *word = u64::from_le(*word);
     }
-}
-
-impl<'a> WordsArg<'a> for Box<Words> {
-    #[inline]
-    fn from_words(words: &'a Words) -> Self {
-        Box::new(*words)
-    }
-}
-
-#[inline]
-fn with_words<'a, A: WordsArg<'a>, R>(f: fn(u64, A) -> R, len: u64, words: &'a Words) -> R {
-    f(len, A::from_words(words))
-}
-
-/// Builds a bitmap store from words read from the input.
-#[inline]
-fn bitmap_store(len: u64, words: &Words, validate: bool) -> Result<BitmapStore, &'static str> {
     if validate {
-        with_words(BitmapStore::try_from_words, len, words)
+        if store.recount() != len {
+            return Err(invalid_data(
+                "bitmap container cardinality does not match its bits",
+            ));
+        }
     } else {
-        Ok(with_words(BitmapStore::from_words_unchecked, len, words))
+        store.set_len(len);
     }
+    Ok(store)
 }
 
 /// Reusable buffers for reading container payloads.
@@ -147,7 +137,6 @@ pub(crate) struct PayloadReader {
     bytes: Vec<u8>,
     values: Vec<u16>,
     intervals: Vec<Interval>,
-    words: Option<Box<Words>>,
 }
 
 impl PayloadReader {
@@ -156,7 +145,6 @@ impl PayloadReader {
             bytes: Vec::new(),
             values: Vec::new(),
             intervals: Vec::new(),
-            words: None,
         }
     }
 
@@ -207,16 +195,9 @@ impl PayloadReader {
             };
             Ok(Container::Array(store))
         } else {
-            let words = self
-                .words
-                .get_or_insert_with(|| Box::new([0u64; BITMAP_WORDS]));
-            self.bytes.resize(BITMAP_BYTES, 0);
-            reader.read_exact(&mut self.bytes)?;
-            for (word, &bytes) in words.iter_mut().zip(self.bytes.as_chunks::<8>().0) {
-                *word = u64::from_le_bytes(bytes);
-            }
-            let store = bitmap_store(n as u64, words, validate).map_err(invalid_data)?;
-            Ok(Container::Bitmap(store))
+            // `n > ARRAY_LIMIT`, so the store is a valid bitmap container once its cardinality
+            // matches the bits.
+            Ok(Container::Bitmap(read_bitmap(reader, n as u64, validate)?))
         }
     }
 }

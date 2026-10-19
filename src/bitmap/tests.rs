@@ -357,6 +357,22 @@ mod serialization {
                 .kind(),
             io::ErrorKind::InvalidData
         );
+        // Unchecked: an invalid bitmap (the announced cardinality), no panic even in debug.
+        let rb = RoaringBitmap128::deserialize_unchecked_from(&bytes[..]).unwrap();
+        assert_eq!(rb.len(), 5001);
+        assert!(rb.internal_validate().is_err());
+        // A correct bitmap payload read in place, checked and unchecked.
+        let mut bytes = header(COOKIE, 0, 1);
+        bytes.extend_from_slice(&descriptor(MAX_KEY, 5119));
+        bytes.extend_from_slice(&[0xFF; 640]);
+        bytes.extend_from_slice(&[0x00; 8192 - 640]);
+        for rb in [
+            RoaringBitmap128::deserialize_from(&bytes[..]).unwrap(),
+            RoaringBitmap128::deserialize_unchecked_from(&bytes[..]).unwrap(),
+        ] {
+            rb.internal_validate().unwrap();
+            assert!(rb.iter().eq((0..5120u16).map(|i| join(MAX_KEY, i))));
+        }
         // Overlapping runs.
         let mut bytes = header(COOKIE, FLAG_RUN_BITSET, 1);
         bytes.push(1);

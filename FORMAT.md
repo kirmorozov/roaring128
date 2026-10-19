@@ -41,7 +41,32 @@ Because the payload size of every container is known from its descriptor and the
 container after reading the header, which is what
 `RoaringBitmap128::intersection_with_serialized_unchecked` does.
 
-`deserialize_from` validates everything above (cookie, flags, key order, sorted array values,
-bitmap cardinality equal to the popcount, well-formed runs) and never allocates more than the
-input actually provides. `deserialize_unchecked_from` skips the content validation of
-containers.
+## Validity rules
+
+A serialized bitmap is valid if and only if all of the following hold:
+
+1. The cookie is `0x3831_5252` and only bit 0 of the flags may be set.
+2. If the run bitset is present, its padding bits (bits `n % 8 ..= 7` of the last byte when
+   `n` is not a multiple of 8) are zero. Writers only emit the bitset when at least one
+   container is a run, but a bitset without any run bit set is valid.
+3. Keys are strictly increasing (so no key is repeated).
+4. Array payloads (`cardinality <= 4096`, not a run) are strictly increasing.
+5. Bitmap payloads (`cardinality > 4096`, not a run) have exactly `cardinality` bits set.
+6. Every run satisfies `start + (length - 1) <= 0xFFFF`; runs are sorted, non overlapping and
+   non adjacent (`start` of a run is greater than `end + 1` of the previous one).
+7. The total cardinality (the sum over all containers) fits in a `u64`.
+
+The input may continue after the last payload: readers stop there and leave the rest unread.
+
+`deserialize_from` checks every rule and never allocates more than a small constant factor of
+what the input actually provides, whatever the announced container count.
+
+`deserialize_unchecked_from` is meant for trusted input. It still checks rules 1, 3, 6 (only the
+bound of each run) and 7, which keep the in-memory index consistent, but not rule 2 nor the
+contents of the containers (rules 4, 5 and the ordering part of 6). Invalid contents yield an
+invalid bitmap, never undefined behaviour; debug builds may panic on them.
+
+`intersection_with_serialized_unchecked` checks rule 1, stops reading descriptors (read in
+chunks of 4096) once the in-memory operand has no greater key, and reads only the payloads of the
+containers whose keys the in-memory operand has. Its reader needs `Seek`; seeks are relative to
+the position where the serialized bitmap starts.
