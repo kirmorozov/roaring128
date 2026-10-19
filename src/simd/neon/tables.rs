@@ -11,6 +11,10 @@ pub(super) static SHUFFLE: Aligned<[[u8; 16]; 256]> = Aligned(shuffle_table());
 /// Number of set bits of every byte value.
 pub(super) static POPCOUNT: Aligned<[u8; 256]> = Aligned(popcount_table());
 
+/// Twice the number of set bits of every byte value: the output advance in bytes when every set
+/// bit becomes one `u16`.
+pub(super) static POPCOUNT_X2: Aligned<[u8; 256]> = Aligned(popcount_x2_table());
+
 /// `BIT_POSITIONS[b]` holds the indices (`0..8`) of the set bits of byte `b` in increasing
 /// order, followed by zeros.
 pub(super) static BIT_POSITIONS: Aligned<[[u8; 8]; 256]> = Aligned(bit_positions_table());
@@ -40,6 +44,16 @@ const fn popcount_table() -> [u8; 256] {
     let mut b = 0;
     while b < 256 {
         table[b] = (b as u8).count_ones() as u8;
+        b += 1;
+    }
+    table
+}
+
+const fn popcount_x2_table() -> [u8; 256] {
+    let mut table = [0; 256];
+    let mut b = 0;
+    while b < 256 {
+        table[b] = 2 * (b as u8).count_ones() as u8;
         b += 1;
     }
     table
