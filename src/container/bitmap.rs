@@ -5,8 +5,11 @@
 
 use core::ops::RangeInclusive;
 
+use alloc::boxed::Box;
+
+use super::ARRAY_LIMIT;
 use super::array::ArrayStore;
-use crate::simd::Words;
+use crate::simd::{self, BITMAP_WORDS, Words};
 
 #[repr(C, align(64))]
 pub(crate) struct BitmapData {
@@ -16,7 +19,7 @@ pub(crate) struct BitmapData {
 }
 
 /// A bitmap of 65536 bits with cached cardinality.
-pub(crate) struct BitmapStore(alloc::boxed::Box<BitmapData>);
+pub(crate) struct BitmapStore(Box<BitmapData>);
 
 const _: () = assert!(core::mem::size_of::<BitmapStore>() == 8);
 
@@ -24,27 +27,36 @@ const _: () = assert!(core::mem::size_of::<BitmapStore>() == 8);
 impl BitmapStore {
     /// An empty bitmap (zeroed allocation).
     pub(crate) fn new() -> BitmapStore {
-        todo!()
+        // SAFETY: all-zero bits are a valid `BitmapData` (plain integers).
+        BitmapStore(unsafe { Box::<BitmapData>::new_zeroed().assume_init() })
     }
 
     pub(crate) fn full() -> BitmapStore {
-        todo!()
+        let mut bitmap = BitmapStore::new();
+        bitmap.0.bits = [u64::MAX; BITMAP_WORDS];
+        bitmap.0.len = 1 << 16;
+        bitmap
     }
 
     /// `len` must equal the popcount of `bits`.
-    pub(crate) fn from_words_unchecked(len: u64, bits: alloc::boxed::Box<Words>) -> BitmapStore {
-        let _ = bits;
-        todo!("{len}")
+    pub(crate) fn from_words_unchecked(len: u64, bits: &Words) -> BitmapStore {
+        debug_assert_eq!(len, simd::bitmap_popcount(bits) as u64);
+        let mut bitmap = BitmapStore::new();
+        bitmap.0.bits = *bits;
+        bitmap.0.len = len;
+        bitmap
     }
 
     /// Validating constructor used by deserialization: `len` must match the popcount and be
     /// greater than `ARRAY_LIMIT`.
-    pub(crate) fn try_from_words(
-        len: u64,
-        bits: alloc::boxed::Box<Words>,
-    ) -> Result<BitmapStore, &'static str> {
-        let _ = bits;
-        todo!("{len}")
+    pub(crate) fn try_from_words(len: u64, bits: &Words) -> Result<BitmapStore, &'static str> {
+        if len <= ARRAY_LIMIT {
+            return Err("bitmap container cardinality is too small");
+        }
+        if simd::bitmap_popcount(bits) as u64 != len {
+            return Err("bitmap container cardinality does not match its bits");
+        }
+        Ok(BitmapStore::from_words_unchecked(len, bits))
     }
 
     pub(crate) fn len(&self) -> u64 {
@@ -71,11 +83,18 @@ impl BitmapStore {
 
     /// Recomputes the cached cardinality from the bits.
     pub(crate) fn recount(&mut self) -> u64 {
-        todo!()
+        self.0.len = simd::bitmap_popcount(&self.0.bits) as u64;
+        self.0.len
     }
 
+    #[inline]
     pub(crate) fn insert(&mut self, index: u16) -> bool {
-        todo!("{index}")
+        let word = &mut self.0.bits[index as usize / 64];
+        let new = *word | (1 << (index % 64));
+        let added = new != *word;
+        *word = new;
+        self.0.len += added as u64;
+        added
     }
 
     pub(crate) fn insert_range(&mut self, range: RangeInclusive<u16>) -> u64 {
@@ -106,8 +125,9 @@ impl BitmapStore {
         todo!("{n}")
     }
 
+    #[inline]
     pub(crate) fn contains(&self, index: u16) -> bool {
-        todo!("{index}")
+        self.0.bits[index as usize / 64] >> (index % 64) & 1 == 1
     }
 
     pub(crate) fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
@@ -158,7 +178,12 @@ impl BitmapStore {
 
 impl Clone for BitmapStore {
     fn clone(&self) -> Self {
-        todo!()
+        let mut data = Box::<BitmapData>::new_uninit();
+        // SAFETY: `BitmapData` is plain data; copying one value fully initializes the box.
+        unsafe {
+            core::ptr::copy_nonoverlapping(&*self.0, data.as_mut_ptr(), 1);
+            BitmapStore(data.assume_init())
+        }
     }
 
     fn clone_from(&mut self, source: &Self) {

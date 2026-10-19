@@ -8,16 +8,17 @@
 //! cardinality could exceed [`super::ARRAY_LIMIT`] are computed into a bitmap instead (like
 //! CRoaring), see `super::Container`.
 
+use core::mem::MaybeUninit;
 use core::ops::RangeInclusive;
 
 use super::bitmap::BitmapStore;
 use super::heap::HeapVec;
+use crate::simd;
 
 /// Number of values stored without heap allocation.
 pub(crate) const INLINE_CAPACITY: usize = 7;
 
 #[derive(Clone)]
-#[allow(dead_code)]
 enum Repr {
     Inline {
         len: u8,
@@ -48,12 +49,26 @@ impl ArrayStore {
     }
 
     pub(crate) fn with_capacity(capacity: usize) -> ArrayStore {
-        todo!("{capacity}")
+        if capacity <= INLINE_CAPACITY {
+            ArrayStore::new()
+        } else {
+            ArrayStore(Repr::Heap(HeapVec::with_capacity(capacity)))
+        }
     }
 
     /// `values` must be strictly increasing.
     pub(crate) fn from_sorted_unchecked(values: &[u16]) -> ArrayStore {
-        todo!("{}", values.len())
+        debug_assert!(values.windows(2).all(|w| w[0] < w[1]));
+        if values.len() <= INLINE_CAPACITY {
+            let mut data = [0; INLINE_CAPACITY];
+            data[..values.len()].copy_from_slice(values);
+            ArrayStore(Repr::Inline {
+                len: values.len() as u8,
+                data,
+            })
+        } else {
+            ArrayStore(Repr::Heap(HeapVec::from_slice(values)))
+        }
     }
 
     /// Validating constructor used by deserialization: strictly increasing and at most
@@ -67,10 +82,28 @@ impl ArrayStore {
     /// inline.
     pub(crate) fn build(
         bound: usize,
-        f: impl FnOnce(&mut [core::mem::MaybeUninit<u16>]) -> usize,
+        f: impl FnOnce(&mut [MaybeUninit<u16>]) -> usize,
     ) -> ArrayStore {
-        let _ = f;
-        todo!("{bound}")
+        if bound <= INLINE_CAPACITY {
+            let mut buf = [MaybeUninit::<u16>::uninit(); INLINE_CAPACITY];
+            let n = f(&mut buf[..bound]);
+            assert!(n <= bound, "array kernel exceeded its bound");
+            // SAFETY: the kernel initialized the first `n` values.
+            return ArrayStore::from_sorted_unchecked(unsafe { simd::assume_init(&buf, n) });
+        }
+        let mut heap = HeapVec::with_capacity(bound);
+        let n = f(&mut heap.spare_capacity_mut()[..bound]);
+        assert!(n <= bound, "array kernel exceeded its bound");
+        // SAFETY: the kernel initialized the first `n` values of the spare capacity.
+        unsafe { heap.set_len(n) };
+        if n <= INLINE_CAPACITY {
+            return ArrayStore::from_sorted_unchecked(heap.as_slice());
+        }
+        // Give back memory when the result is much smaller than its bound (e.g. intersections).
+        if n < bound / 2 {
+            heap.shrink_to_fit();
+        }
+        ArrayStore(Repr::Heap(heap))
     }
 
     pub(crate) fn len(&self) -> u64 {
@@ -81,8 +114,12 @@ impl ArrayStore {
         self.as_slice().is_empty()
     }
 
+    #[inline]
     pub(crate) fn as_slice(&self) -> &[u16] {
-        todo!()
+        match &self.0 {
+            Repr::Inline { len, data } => &data[..*len as usize],
+            Repr::Heap(heap) => heap.as_slice(),
+        }
     }
 
     pub(crate) fn insert(&mut self, index: u16) -> bool {
