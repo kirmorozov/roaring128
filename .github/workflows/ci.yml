@@ -144,10 +144,10 @@ jobs:
           if [ "$MATRIX_BACKEND" != auto ]; then export ROARING128_EXPECT_BACKEND="$MATRIX_BACKEND"; fi
           cargo test --lib simd
       # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
-      - name: cargo test --all-features (non-blocking for now)
+      - name: cargo test --all-features --no-fail-fast (non-blocking for now)
         id: full
         continue-on-error: true
-        run: cargo test --all-features
+        run: cargo test --all-features --no-fail-fast
       - name: Report non-blocking results
         if: always()
         run: |
@@ -214,11 +214,11 @@ jobs:
         run: cargo test --lib simd
       # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
       # Doctests are skipped: they are not run through the SDE runner.
-      - name: cargo test --all-features --lib --tests under sde -${{ matrix.cpu }} (non-blocking for now)
+      - name: cargo test --all-features --lib --tests --no-fail-fast under sde -${{ matrix.cpu }} (non-blocking for now)
         id: full
         continue-on-error: true
         timeout-minutes: 30
-        run: cargo test --all-features --lib --tests
+        run: cargo test --all-features --lib --tests --no-fail-fast
       - name: Report non-blocking results
         if: always()
         run: |
@@ -269,10 +269,10 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
       # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
-      - name: cargo test --all-features (non-blocking for now)
+      - name: cargo test --all-features --no-fail-fast (non-blocking for now)
         id: full
         continue-on-error: true
-        run: cargo test --all-features
+        run: cargo test --all-features --no-fail-fast
       - name: Report non-blocking results
         if: always()
         run: |
