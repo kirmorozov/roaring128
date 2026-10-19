@@ -252,8 +252,18 @@ impl Container {
         }
     }
 
+    /// Whether all 65536 values are present, in `O(1)`: a full run container is the single
+    /// interval `0..=65535` (runs are sorted, disjoint and non adjacent) and arrays never
+    /// exceed `ARRAY_LIMIT` values.
+    #[inline]
     pub(crate) fn is_full(&self) -> bool {
-        self.len() == 1 << 16
+        match self {
+            Container::Array(_) => false,
+            Container::Bitmap(b) => b.len() == 1 << 16,
+            Container::Run(r) => {
+                matches!(r.intervals(), [iv] if iv.start() == 0 && iv.end() == u16::MAX)
+            }
+        }
     }
 
     pub(crate) fn kind(&self) -> Kind {

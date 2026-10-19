@@ -809,6 +809,13 @@ fn run_constructors() {
     let full = Container::full();
     assert_eq!(full.kind(), Kind::Run);
     assert!(full.is_full());
+    assert!(!Container::from_range(0..=65534).is_full());
+    assert!(!Container::from_range(1..=65535).is_full());
+    let mut split = Container::full();
+    split.remove(1000);
+    assert!(!split.is_full());
+    split.insert(1000);
+    assert!(split.is_full());
     check(&full, &(0..=u16::MAX).collect());
 }
 
@@ -1205,6 +1212,17 @@ fn optimize_keeping_the_representation_matches_roaring() {
         check(&c, &model);
     }
     assert!(kept > 0);
+}
+
+#[test]
+fn is_full_by_representation() {
+    let all: Vec<u16> = (0..=u16::MAX).collect();
+    let full = Container::from_sorted_unchecked(&all);
+    assert_eq!(full.kind(), Kind::Bitmap);
+    assert!(full.is_full());
+    let almost = Container::from_sorted_unchecked(&all[1..]);
+    assert!(!almost.is_full());
+    assert!(!Container::from_sorted_unchecked(&all[..4096]).is_full());
 }
 
 #[test]

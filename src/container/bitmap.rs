@@ -796,7 +796,8 @@ mod tests {
     #[test]
     fn operations_with_arrays_and_bitmaps() {
         let mut rng = Rng::new(0xB003);
-        for _ in 0..cases(200) {
+        // About 25 whole-bitmap operations per case: a single case under Miri.
+        for _ in 0..if cfg!(miri) { 1 } else { 200 } {
             let ma = random_model(&mut rng);
             let mb = random_model(&mut rng);
             let (a, b) = (bitmap_of(&ma), bitmap_of(&mb));
