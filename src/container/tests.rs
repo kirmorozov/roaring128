@@ -82,6 +82,8 @@ impl Rng {
             0 => 1,
             1 => 1 + self.below(8),
             2 => 1 + self.below(200),
+            // Long ranges make the `BTreeSet` model very slow under Miri.
+            _ if cfg!(miri) => 1 + self.below(300),
             3 => 1 + self.below(5000),
             _ => 1 + self.below(65536),
         };
@@ -91,21 +93,28 @@ impl Rng {
     }
 }
 
-/// Picks `count` distinct offsets in `0..width` (marked in `bits` from `lo`), by sampling the
-/// smaller of the set and its complement.
-fn sample(rng: &mut Rng, bits: &mut [bool], lo: usize, width: usize, count: usize) {
+/// `count` distinct values of `lo..lo + width`, sampling the smaller of the set and its
+/// complement (the work is proportional to `count`, which keeps Miri runs short).
+fn sample(rng: &mut Rng, lo: usize, width: usize, count: usize) -> Vec<u16> {
     let count = count.min(width);
-    let window = &mut bits[lo..lo + width];
     let invert = count > width / 2;
     let picks = if invert { width - count } else { count };
-    window.fill(invert);
-    let mut picked = 0;
-    while picked < picks {
+    let mut taken = alloc::vec![false; width];
+    let mut picked = Vec::with_capacity(picks);
+    while picked.len() < picks {
         let i = rng.below(width as u64) as usize;
-        if window[i] == invert {
-            window[i] = !invert;
-            picked += 1;
+        if !taken[i] {
+            taken[i] = true;
+            picked.push(i);
         }
+    }
+    if invert {
+        (0..width)
+            .filter(|&i| !taken[i])
+            .map(|i| (lo + i) as u16)
+            .collect()
+    } else {
+        picked.into_iter().map(|i| (lo + i) as u16).collect()
     }
 }
 
@@ -115,27 +124,24 @@ pub(crate) fn random_set(rng: &mut Rng, n: usize) -> Model {
     if n == 0 {
         return Model::new();
     }
-    let mut bits = alloc::vec![false; 65536];
-    match rng.below(5) {
+    let mut values: Vec<u16> = match rng.below(5) {
         // Uniform over the whole container.
-        0 => sample(rng, &mut bits, 0, 65536, n),
+        0 => sample(rng, 0, 65536, n),
         // Clustered in a window.
         1 => {
             let width = (n * (1 + rng.below(4) as usize)).min(65536);
             let lo = rng.below((65536 - width + 1) as u64) as usize;
-            sample(rng, &mut bits, lo, width, n);
+            sample(rng, lo, width, n)
         }
-        // Runs of consecutive values.
+        // Runs of consecutive values (about `n` values, overlaps are merged).
         2 => {
-            let mut count = 0;
-            while count < n {
+            let mut values = Vec::with_capacity(n);
+            while values.len() < n {
                 let start = rng.below(65536) as usize;
                 let len = 1 + rng.below(1 + (n as u64 / 4).min(3000)) as usize;
-                for b in &mut bits[start..(start + len).min(65536)] {
-                    count += !*b as usize;
-                    *b = true;
-                }
+                values.extend((start..(start + len).min(65536)).map(|v| v as u16));
             }
+            values
         }
         // Dense prefix or suffix (whole words, word boundaries, container edges) with a few
         // holes.
@@ -145,22 +151,28 @@ pub(crate) fn random_set(rng: &mut Rng, n: usize) -> Model {
             } else {
                 0..n
             };
-            let lo = range.start;
-            bits[range].fill(true);
-            for _ in 0..rng.below(8) {
-                bits[lo + rng.below(n as u64) as usize] = false;
-            }
+            let holes: Vec<usize> = (0..rng.below(8))
+                .map(|_| range.start + rng.below(n as u64) as usize)
+                .collect();
+            range
+                .filter(|v| !holes.contains(v))
+                .map(|v| v as u16)
+                .collect()
         }
         // Every k-th value.
         _ => {
             let step = 1 + rng.below(16) as usize;
             let start = rng.below(step as u64) as usize;
-            for v in (start..65536).step_by(step).take(n) {
-                bits[v] = true;
-            }
+            (start..65536)
+                .step_by(step)
+                .take(n)
+                .map(|v| v as u16)
+                .collect()
         }
-    }
-    (0..=u16::MAX).filter(|&v| bits[v as usize]).collect()
+    };
+    values.sort_unstable();
+    values.dedup();
+    values.into_iter().collect()
 }
 
 /// A cardinality drawn from the interesting classes (inline, heap array, boundary, bitmap).
@@ -854,11 +866,10 @@ fn decode_payload(kind: Kind, descriptor: u16, bytes: &[u8]) -> Vec<u16> {
             assert_eq!(bytes.len(), BITMAP_BYTES);
             let mut out = Vec::new();
             for (j, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
-                let w = u64::from_le_bytes(*chunk);
-                for i in 0..64 {
-                    if w >> i & 1 == 1 {
-                        out.push((64 * j + i) as u16);
-                    }
+                let mut w = u64::from_le_bytes(*chunk);
+                while w != 0 {
+                    out.push((64 * j) as u16 + w.trailing_zeros() as u16);
+                    w &= w - 1;
                 }
             }
             assert_eq!(out.len(), descriptor as usize + 1);

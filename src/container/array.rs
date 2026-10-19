@@ -563,7 +563,7 @@ mod tests {
     fn operations_against_model() {
         let mut rng = Rng::new(0xA001);
         for _ in 0..cases(300) {
-            let n = rng.below(6000) as usize;
+            let n = rng.below(if cfg!(miri) { 300 } else { 6000 }) as usize;
             let mut model = random_set(&mut rng, n);
             let values: Vec<u16> = model.iter().copied().collect();
             let mut a = if rng.chance(50) {

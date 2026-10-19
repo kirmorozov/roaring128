@@ -668,7 +668,15 @@ mod tests {
     use crate::container::tests::{Model, Rng, cases, random_model, runs_of};
 
     fn values(b: &BitmapStore) -> Vec<u16> {
-        (0..=u16::MAX).filter(|&v| b.contains(v)).collect()
+        let mut out = Vec::new();
+        for (k, &w) in b.as_words().iter().enumerate() {
+            let mut w = w;
+            while w != 0 {
+                out.push((k * 64) as u16 + w.trailing_zeros() as u16);
+                w &= w - 1;
+            }
+        }
+        out
     }
 
     #[track_caller]
