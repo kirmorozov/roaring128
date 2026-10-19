@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::cmp::Reverse;
 use core::convert::Infallible;
 
-use super::is_skewed;
+use super::is_skewed_update;
 use crate::container::Container;
 use crate::{MultiOps, RoaringBitmap128};
 
@@ -251,7 +251,7 @@ fn multi_owned(mut bitmaps: Vec<RoaringBitmap128>, op: Op) -> RoaringBitmap128 {
         .expect("non empty");
     let rest: usize =
         bitmaps.iter().map(|b| b.map.len()).sum::<usize>() - bitmaps[biggest].map.len();
-    if is_skewed(rest, bitmaps[biggest].map.len()) {
+    if is_skewed_update(rest, bitmaps[biggest].map.len()) {
         // Point updates into the dominant operand beat touching all of its containers.
         let mut acc = bitmaps.swap_remove(biggest);
         for bitmap in bitmaps {
@@ -276,7 +276,7 @@ fn multi_ref(mut bitmaps: Vec<&RoaringBitmap128>, op: Op) -> RoaringBitmap128 {
         .expect("non empty");
     let rest: usize =
         bitmaps.iter().map(|b| b.map.len()).sum::<usize>() - bitmaps[biggest].map.len();
-    if is_skewed(rest, bitmaps[biggest].map.len()) {
+    if is_skewed_update(rest, bitmaps[biggest].map.len()) {
         let mut acc = bitmaps.swap_remove(biggest).clone();
         for bitmap in bitmaps {
             match op {

@@ -1,6 +1,6 @@
 //! Binary set operations on the key index.
 //!
-//! Strategy (see [`super::is_skewed`]):
+//! Strategy (see [`super::is_skewed`] and [`super::is_skewed_update`]):
 //!
 //! * sizes within [`super::SKEW_RATIO`] of each other: a linear merge-join over the two key
 //!   ordered maps, `O(n + m)`;
@@ -21,7 +21,7 @@ use core::iter::Peekable;
 use core::mem;
 use core::ops::ControlFlow;
 
-use super::is_skewed;
+use super::{is_skewed, is_skewed_update};
 use crate::RoaringBitmap128;
 use crate::container::Container;
 
@@ -251,7 +251,7 @@ impl RoaringBitmap128 {
         } else {
             (other, self)
         };
-        if small.map.is_empty() || is_skewed(small.containers(), big.containers()) {
+        if small.map.is_empty() || is_skewed_update(small.containers(), big.containers()) {
             let mut result = big.clone();
             result.union_assign_ref(small);
             return result;
@@ -277,14 +277,14 @@ impl RoaringBitmap128 {
             self.clone_from(other);
             return;
         }
-        if is_skewed(self.containers(), other.containers()) {
+        if is_skewed_update(self.containers(), other.containers()) {
             // Cheaper to clone the big side and fold the small one into it.
             let small = mem::replace(self, other.clone());
             self.union_assign_owned(small);
             return;
         }
         let RoaringBitmap128 { map, len } = self;
-        if is_skewed(other.containers(), map.len()) {
+        if is_skewed_update(other.containers(), map.len()) {
             for (&k, b) in &other.map {
                 match map.entry(k) {
                     Entry::Vacant(entry) => {
@@ -343,7 +343,7 @@ impl RoaringBitmap128 {
         hi: u128,
     ) {
         let RoaringBitmap128 { map, len } = self;
-        if is_skewed(count, map.len()) {
+        if is_skewed_update(count, map.len()) {
             for (k, b) in entries {
                 match map.entry(k) {
                     Entry::Vacant(entry) => {
@@ -540,7 +540,7 @@ impl RoaringBitmap128 {
         } else {
             (other, self)
         };
-        if small.map.is_empty() || is_skewed(small.containers(), big.containers()) {
+        if small.map.is_empty() || is_skewed_update(small.containers(), big.containers()) {
             let mut result = big.clone();
             result.symmetric_difference_assign_ref(small);
             return result;
@@ -566,13 +566,13 @@ impl RoaringBitmap128 {
             self.clone_from(other);
             return;
         }
-        if is_skewed(self.containers(), other.containers()) {
+        if is_skewed_update(self.containers(), other.containers()) {
             let small = mem::replace(self, other.clone());
             self.symmetric_difference_assign_owned(small);
             return;
         }
         let RoaringBitmap128 { map, len } = self;
-        if is_skewed(other.containers(), map.len()) {
+        if is_skewed_update(other.containers(), map.len()) {
             for (&k, b) in &other.map {
                 match map.entry(k) {
                     Entry::Vacant(entry) => {
@@ -626,7 +626,7 @@ impl RoaringBitmap128 {
             return;
         };
         let RoaringBitmap128 { map, len } = self;
-        if is_skewed(other.containers(), map.len()) {
+        if is_skewed_update(other.containers(), map.len()) {
             for (k, b) in other.map {
                 match map.entry(k) {
                     Entry::Vacant(entry) => {

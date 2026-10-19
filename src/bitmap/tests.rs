@@ -10,7 +10,7 @@ use core::ops::{Bound, RangeBounds, RangeInclusive};
 
 use proptest::prelude::*;
 
-use super::{SKEW_RATIO, is_skewed, prefer_point_inserts};
+use super::{SKEW_RATIO, UPDATE_SKEW_RATIO, is_skewed, is_skewed_update, prefer_point_inserts};
 use crate::util::{MAX_KEY, join};
 use crate::{MultiOps, RoaringBitmap128};
 
@@ -100,6 +100,10 @@ fn strategy_thresholds() {
     assert!(!is_skewed(1, SKEW_RATIO));
     assert!(!is_skewed(100, 100));
     assert!(!is_skewed(usize::MAX, usize::MAX));
+    assert!(is_skewed_update(1, UPDATE_SKEW_RATIO + 1));
+    assert!(!is_skewed_update(1, UPDATE_SKEW_RATIO));
+    // Between the two ratios: in-place updates use point entries, queries still merge.
+    assert!(is_skewed_update(150, 2000) && !is_skewed(150, 2000));
     assert!(prefer_point_inserts(1, 100));
     assert!(!prefer_point_inserts(50, 100));
     assert!(!prefer_point_inserts(usize::MAX, usize::MAX));
@@ -844,6 +848,9 @@ fn set_ops_balanced_and_skewed() {
         (dense(0..20u128, 1), dense(10..30u128, 2)),
         (dense(0..3u128, 1), sparse(0..1000u128, 4)),
         (sparse(0..1000u128, 4), dense(0..3u128, 1)),
+        // Container count ratio between UPDATE_SKEW_RATIO and SKEW_RATIO.
+        (sparse(0..150u128, 6), many(7)),
+        (many(7), sparse(1900..2050u128, 6)),
     ];
     for (a, b) in &cases {
         check_all_ops(a, b);
