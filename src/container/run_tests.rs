@@ -19,7 +19,14 @@ use super::*;
 use crate::container::Kind;
 
 /// Random cases per test (per operand combination for the container operations).
-const CASES: usize = if cfg!(miri) { 2 } else { 250 };
+const CASES: usize = if cfg!(miri) { 1 } else { 250 };
+
+/// Largest random set (Miri keeps the sets small; the edges of the value space are still
+/// covered because the random windows touch 0 and 65535).
+const MAX_SET: usize = if cfg!(miri) { 500 } else { 1 << 16 };
+
+/// Longest random range of the range operations.
+const MAX_RANGE: u32 = if cfg!(miri) { 600 } else { 1 << 16 };
 
 // ---------------------------------------------------------------------------------------------
 // Helpers
@@ -259,7 +266,7 @@ impl Rng {
     fn range(&mut self, m: &Model) -> RangeInclusive<u16> {
         let s = self.near(m);
         let len = match self.below(50) {
-            0 => 1 << 16,
+            0 => MAX_RANGE,
             1..=5 => self.below(1 << 13),
             _ => self.below(300),
         };
@@ -294,7 +301,7 @@ fn gen_set(rng: &mut Rng, min: usize, max: usize) -> Model {
     let width = hi - lo + 1;
     if rng.chance(20) {
         // Random density over (a part of) the window: many short runs and gaps.
-        let hi = if cfg!(miri) { hi.min(lo + 5_000) } else { hi };
+        let hi = if cfg!(miri) { hi.min(lo + 1_000) } else { hi };
         let density = 5 + rng.below(90);
         values.extend(
             (lo..=hi)
@@ -309,7 +316,7 @@ fn gen_set(rng: &mut Rng, min: usize, max: usize) -> Model {
         2 => 100,
         _ => width.min(max as u32).max(1),
     };
-    let pieces = 1 + rng.below(if cfg!(miri) { 6 } else { 48 });
+    let pieces = 1 + rng.below(if cfg!(miri) { 4 } else { 48 });
     for _ in 0..pieces {
         if values.len() >= max {
             break;
@@ -344,11 +351,11 @@ fn finish_set(rng: &mut Rng, mut values: Vec<u16>, min: usize, max: usize) -> Mo
 
 /// Bounds on the cardinality of a random operand of the given representation.
 fn bounds(kind: Kind) -> (usize, usize) {
-    let max = if cfg!(miri) { 6_000 } else { 1 << 16 };
+    let bitmap_max = if cfg!(miri) { 4_300 } else { 1 << 16 };
     match kind {
         Kind::Array => (0, ARRAY_LIMIT as usize),
-        Kind::Bitmap => (ARRAY_LIMIT as usize + 1, max),
-        Kind::Run => (0, max),
+        Kind::Bitmap => (ARRAY_LIMIT as usize + 1, bitmap_max),
+        Kind::Run => (0, MAX_SET),
     }
 }
 
@@ -368,7 +375,7 @@ fn derive(rng: &mut Rng, a: &Model, kind: Kind) -> Model {
             b
         }
         3 => {
-            let extra = gen_set(rng, 0, 2000);
+            let extra = gen_set(rng, 0, MAX_SET.min(2000));
             a.union(&extra).copied().collect()
         }
         4 => a.iter().map(|&v| v.saturating_add(1)).collect(),
@@ -386,6 +393,7 @@ fn derive(rng: &mut Rng, a: &Model, kind: Kind) -> Model {
         }
         5 => {
             let (lo, hi) = window(rng);
+            let hi = if cfg!(miri) { hi.min(lo + 4_400) } else { hi };
             (lo..=hi)
                 .map(|v| v as u16)
                 .filter(|v| !a.contains(v))
@@ -400,7 +408,8 @@ fn derive(rng: &mut Rng, a: &Model, kind: Kind) -> Model {
     }
 }
 
-/// Hand-picked sets around the edges (cheap ones first; Miri only uses a prefix).
+/// Hand-picked sets around the edges (cheap ones first; Miri only uses the small ones, its
+/// bitmap operands come from the random bitmap tests).
 fn special_sets() -> Vec<Model> {
     let sets: Vec<Model> = vec![
         Model::new(),
@@ -418,7 +427,7 @@ fn special_sets() -> Vec<Model> {
         (0..=u16::MAX).step_by(3).collect(),
     ];
     if cfg!(miri) {
-        sets.into_iter().take(6).collect()
+        sets.into_iter().take(5).collect()
     } else {
         sets
     }
@@ -1219,12 +1228,13 @@ fn internal_validate() {
 
 #[test]
 fn mem_size() {
+    // Inline handle (8 bytes) + heap block (8-byte header + 4 bytes per interval of capacity).
     let mut s = RunStore::new();
-    assert_eq!(s.mem_size(), 0);
+    assert_eq!(s.mem_size(), 8);
     s.insert(5);
-    assert!(s.mem_size() >= 8 + 4);
+    assert!(s.mem_size() >= 8 + 8 + 4);
     let full = RunStore::full();
-    assert_eq!(full.mem_size(), 8 + 4);
+    assert_eq!(full.mem_size(), 8 + 8 + 4);
 }
 
 #[test]
@@ -1267,6 +1277,9 @@ fn conversions_word_edges() {
     ];
     for p in cases {
         let s = store(p);
+        if cfg!(miri) && s.len() > 10_000 {
+            continue;
+        }
         let b = s.to_bitmap();
         assert_eq!(b.len(), s.len());
         assert_values(&word_values(b.as_words()), &run_values(&s), "to_bitmap");
@@ -1301,9 +1314,9 @@ fn check_store(r: &RunStore, m: &Model, context: &str) {
 #[test]
 fn model_point_ops() {
     let mut rng = Rng::new(1);
-    let steps = if cfg!(miri) { 30 } else { 200 };
+    let steps = if cfg!(miri) { 16 } else { 200 };
     for case in 0..CASES {
-        let mut m = gen_set(&mut rng, 0, 1500);
+        let mut m = gen_set(&mut rng, 0, MAX_SET.min(1500));
         let mut r = run_of(&m);
         for step in 0..steps {
             let v = if rng.chance(10) {
@@ -1332,9 +1345,9 @@ fn model_point_ops() {
 #[test]
 fn model_range_ops() {
     let mut rng = Rng::new(2);
-    let steps = if cfg!(miri) { 12 } else { 40 };
+    let steps = if cfg!(miri) { 8 } else { 40 };
     for case in 0..CASES {
-        let mut m = gen_set(&mut rng, 0, 4000);
+        let mut m = gen_set(&mut rng, 0, MAX_SET.min(4000));
         let mut r = run_of(&m);
         for step in 0..steps {
             let range = rng.range(&m);
@@ -1363,7 +1376,7 @@ fn model_range_ops() {
 fn model_remove_smallest_biggest() {
     let mut rng = Rng::new(3);
     for case in 0..CASES * 2 {
-        let m = gen_set(&mut rng, 1, 20_000);
+        let m = gen_set(&mut rng, 1, MAX_SET.min(20_000));
         let runs = model_runs(&m);
         let len = m.len() as u64;
         // Amounts on interval boundaries (#359), inside intervals and beyond the cardinality.
@@ -1400,7 +1413,7 @@ fn model_remove_smallest_biggest() {
 fn model_queries() {
     let mut rng = Rng::new(4);
     for case in 0..CASES {
-        let m = gen_set(&mut rng, 0, 1 << 16);
+        let m = gen_set(&mut rng, 0, MAX_SET);
         let r = run_of(&m);
         let model = vec_of(&m);
         let runs = model_runs(&m);
@@ -1411,7 +1424,7 @@ fn model_queries() {
         assert_eq!(r.run_amount(), runs.len() as u64);
         assert_eq!(r.byte_size(), 2 + 4 * runs.len());
 
-        let queries = if cfg!(miri) { 20 } else { 100 };
+        let queries = if cfg!(miri) { 10 } else { 100 };
         for _ in 0..queries {
             let q = rng.near(&m);
             let context = alloc::format!("case {case} query {q}");
@@ -1461,7 +1474,7 @@ fn model_queries() {
 fn model_conversions() {
     let mut rng = Rng::new(5);
     for case in 0..CASES {
-        let m = gen_set(&mut rng, 0, 1 << 16);
+        let m = gen_set(&mut rng, 0, MAX_SET);
         let model = vec_of(&m);
         let runs = model_runs(&m);
         let r = run_of(&m);
@@ -1495,7 +1508,7 @@ fn model_conversions() {
         );
 
         // or / xor into arbitrary words
-        let base = gen_set(&mut rng, 0, 1 << 16);
+        let base = gen_set(&mut rng, 0, MAX_SET);
         let mut words = *bitmap_of(&base).as_words();
         r.or_into_words(&mut words);
         assert_values(
@@ -1743,18 +1756,20 @@ fn subset_and_equality_with_gaps() {
 #[test]
 fn bitmap_queries_word_edges() {
     // Every edge position of runs with various word alignments, probed one bit at a time.
+    // (Miri checks the first run with a few probes, inside a smaller value space.)
     let runs: [(u16, u16); 7] = [
+        (60, 200),
         (0, 0),
         (5, 60),
         (63, 64),
-        (60, 200),
         (64, 191),
         (1000, 5000),
         (65_400, u16::MAX),
     ];
     for (s, e) in runs {
         let r = run(&[(s, e)]);
-        let outside: Vec<u16> = (0..=u16::MAX).filter(|v| !(s..=e).contains(v)).collect();
+        let limit = if cfg!(miri) { 5_200 } else { u16::MAX };
+        let outside: Vec<u16> = (0..=limit).filter(|v| !(s..=e).contains(v)).collect();
         let mut probes = vec![s, e, s.saturating_add(1), e.saturating_sub(1)];
         probes.extend(
             ((s / 64 * 64)..=e)
@@ -1762,6 +1777,10 @@ fn bitmap_queries_word_edges() {
                 .flat_map(|w| [w, w.saturating_add(63)]),
         );
         probes.retain(|p| (s..=e).contains(p));
+        if cfg!(miri) {
+            // First / last word edges of the run.
+            probes.truncate(2);
+        }
         for p in probes {
             let context = alloc::format!("run {s}..={e} probe {p}");
             // The complement of the run plus one probe bit inside it.
@@ -1774,7 +1793,8 @@ fn bitmap_queries_word_edges() {
             let holed: Vec<u16> = (s..=e).filter(|&v| v != p).collect();
             let near = s.saturating_sub(300)..=e.saturating_add(300);
             let far = (0..=u16::MAX).filter(|v| !near.contains(v));
-            let b = Container::Bitmap(bitmap(holed.iter().copied().chain(far.take(5000))));
+            let far = far.take(if cfg!(miri) { 4_200 } else { 5_000 });
+            let b = Container::Bitmap(bitmap(holed.iter().copied().chain(far)));
             assert!(!is_subset(&r, &b), "{context}: is_subset");
             assert!(!eq_values(&r, &b), "{context}: eq_values");
             assert_eq!(

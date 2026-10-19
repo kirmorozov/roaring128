@@ -421,10 +421,10 @@ impl RunStore {
         serialized_byte_size(self.run_amount())
     }
 
-    /// Heap bytes owned by the store (allocation header + interval capacity, 0 without
-    /// allocation). The 8-byte handle itself lives inline in the container slot.
+    /// Bytes used by the store: its inline handle plus the heap allocation (header + interval
+    /// capacity), if any. Same convention as `ArrayStore::mem_size` / `BitmapStore::mem_size`.
     pub(crate) fn mem_size(&self) -> usize {
-        self.0.heap_bytes()
+        core::mem::size_of::<RunStore>() + self.0.heap_bytes()
     }
 
     /// Checks the store invariants. Like the `roaring` crate, an empty run container is
