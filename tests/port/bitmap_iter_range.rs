@@ -58,7 +58,10 @@ fn empty_range_u32_max() {
     let m = u32::MAX as u128;
     let rb = RoaringBitmap128::from([m, m + 1]);
     assert_eq!(rb.range(m..m).next(), None);
-    assert!(rb.range((Bound::Excluded(m), Bound::Included(m + 1))).eq([m + 1]));
+    assert!(
+        rb.range((Bound::Excluded(m), Bound::Included(m + 1)))
+            .eq([m + 1])
+    );
     assert!(rb.range((Bound::Excluded(m), Bound::Unbounded)).eq([m + 1]));
 }
 
@@ -67,13 +70,28 @@ fn range_ending_at_max_u128() {
     let rb = RoaringBitmap128::from([0, 1 << 64, u128::MAX - 1, u128::MAX]);
     assert!(rb.range(u128::MAX - 1..).eq([u128::MAX - 1, u128::MAX]));
     assert!(rb.range(u128::MAX..=u128::MAX).eq([u128::MAX]));
-    assert!(rb.range(..=u128::MAX).eq([0, 1 << 64, u128::MAX - 1, u128::MAX]));
+    assert!(
+        rb.range(..=u128::MAX)
+            .eq([0, 1 << 64, u128::MAX - 1, u128::MAX])
+    );
     assert!(rb.range(..u128::MAX).eq([0, 1 << 64, u128::MAX - 1]));
     assert!(rb.range(..).eq([0, 1 << 64, u128::MAX - 1, u128::MAX]));
-    assert!(rb.range((Bound::Excluded(0), Bound::Excluded(u128::MAX))).eq([1 << 64, u128::MAX - 1]));
+    assert!(
+        rb.range((Bound::Excluded(0), Bound::Excluded(u128::MAX)))
+            .eq([1 << 64, u128::MAX - 1])
+    );
     assert!(rb.range((1 << 64)..(1 << 64) + 1).eq([1 << 64]));
-    assert!(rb.clone().into_range(1..).eq([1 << 64, u128::MAX - 1, u128::MAX]));
-    assert!(rb.clone().into_range(..).rev().eq([u128::MAX, u128::MAX - 1, 1 << 64, 0]));
+    assert!(
+        rb.clone()
+            .into_range(1..)
+            .eq([1 << 64, u128::MAX - 1, u128::MAX])
+    );
+    assert!(
+        rb.clone()
+            .into_range(..)
+            .rev()
+            .eq([u128::MAX, u128::MAX - 1, 1 << 64, 0])
+    );
     assert_eq!(rb.range(1..u128::MAX).len(), 2);
 }
 

@@ -70,13 +70,30 @@ fn value_in(d: Dom) -> BoxedStrategy<u128> {
 }
 
 fn spec_in(d: Dom, max_pieces: usize) -> BoxedStrategy<SetSpec> {
-    (vec((piece_with(anchor_in(d), sparse_in(d)), build_mode()), 0..=max_pieces), finish())
+    (
+        vec(
+            (piece_with(anchor_in(d), sparse_in(d)), build_mode()),
+            0..=max_pieces,
+        ),
+        finish(),
+    )
         .prop_map(|(pieces, finish)| SetSpec { pieces, finish })
         .boxed()
 }
 
 fn pair_in(d: Dom) -> BoxedStrategy<(SetSpec, SetSpec)> {
-    (spec_in(d, 3), spec_in(d, 3), vec((piece_with(anchor_in(d), sparse_in(d)), build_mode(), build_mode()), 0..=2))
+    (
+        spec_in(d, 3),
+        spec_in(d, 3),
+        vec(
+            (
+                piece_with(anchor_in(d), sparse_in(d)),
+                build_mode(),
+                build_mode(),
+            ),
+            0..=2,
+        ),
+    )
         .prop_map(|(mut a, mut b, shared)| {
             for (p, ba, bb) in shared {
                 a.pieces.push((p.clone(), ba));
@@ -109,11 +126,23 @@ fn range_in(d: Dom) -> BoxedStrategy<RangeSpec> {
 /// Ranges that are cheap to insert (at most ~200k values).
 fn insertable_in(d: Dom) -> BoxedStrategy<RangeSpec> {
     let max = d.max();
-    (value_in(d), 0..200_000u128, 0..2u8, 0..2u8, prop::bool::weighted(0.1))
+    (
+        value_in(d),
+        0..200_000u128,
+        0..2u8,
+        0..2u8,
+        prop::bool::weighted(0.1),
+    )
         .prop_map(move |(s, len, ks, ke, rev)| {
             let e = (s + len).min(max);
             let (s, e) = if rev { (e, s) } else { (s, e) };
-            let b = |k: u8, v: u128| if k == 0 { Bound::Included(v) } else { Bound::Excluded(v) };
+            let b = |k: u8, v: u128| {
+                if k == 0 {
+                    Bound::Included(v)
+                } else {
+                    Bound::Excluded(v)
+                }
+            };
             RangeSpec(b(ks, s), b(ke, e))
         })
         .boxed()
@@ -173,9 +202,19 @@ fn kinds_bitmap(b: &RoaringBitmap) -> Kinds {
 }
 
 fn kinds_treemap(t: &RoaringTreemap) -> Kinds {
-    t.bitmaps().map(|(_, b)| kinds_bitmap(b)).fold((0, 0, 0, 0, 0, 0, 0), |a, b| {
-        (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4, a.5 + b.5, a.6 + b.6)
-    })
+    t.bitmaps()
+        .map(|(_, b)| kinds_bitmap(b))
+        .fold((0, 0, 0, 0, 0, 0, 0), |a, b| {
+            (
+                a.0 + b.0,
+                a.1 + b.1,
+                a.2 + b.2,
+                a.3 + b.3,
+                a.4 + b.4,
+                a.5 + b.5,
+                a.6 + b.6,
+            )
+        })
 }
 
 fn rrc_bitmap(b: &mut RoaringBitmap) -> bool {
@@ -219,7 +258,11 @@ macro_rules! dual {
             const MAX: u128 = <$v>::MAX as u128;
 
             fn new(strict: bool) -> Self {
-                $name { ours: RoaringBitmap128::new(), theirs: <$theirs>::new(), strict }
+                $name {
+                    ours: RoaringBitmap128::new(),
+                    theirs: <$theirs>::new(),
+                    strict,
+                }
             }
 
             fn v(x: u128) -> $v {
@@ -244,11 +287,16 @@ macro_rules! dual {
             }
 
             fn add(&mut self, values: Vec<u128>, build: Build) {
-                let mut values: Vec<u128> = values.into_iter().filter(|&v| v <= Self::MAX).collect();
+                let mut values: Vec<u128> =
+                    values.into_iter().filter(|&v| v <= Self::MAX).collect();
                 match build {
                     Build::Insert => {
                         for v in values {
-                            assert_eq!(self.ours.insert(v), self.theirs.insert(Self::v(v)), "insert({v:#x})");
+                            assert_eq!(
+                                self.ours.insert(v),
+                                self.theirs.insert(Self::v(v)),
+                                "insert({v:#x})"
+                            );
                         }
                     }
                     Build::Extend => {
@@ -270,23 +318,45 @@ macro_rules! dual {
                     Build::Append => {
                         values.sort_unstable();
                         values.dedup();
-                        let a = self.ours.append(values.iter().copied()).map_err(|e| e.valid_until());
-                        let b = self.theirs.append(values.iter().map(|&v| Self::v(v))).map_err(|e| e.valid_until());
+                        let a = self
+                            .ours
+                            .append(values.iter().copied())
+                            .map_err(|e| e.valid_until());
+                        let b = self
+                            .theirs
+                            .append(values.iter().map(|&v| Self::v(v)))
+                            .map_err(|e| e.valid_until());
                         assert_eq!(a, b, "append");
                     }
                     Build::Push => {
                         values.sort_unstable();
                         values.dedup();
                         for v in values {
-                            let a = self.ours.try_push(v).is_ok();
-                            let b = self.theirs.try_push(Self::v(v)).is_ok();
-                            assert_eq!(a, b, "try_push({v:#x})");
-                            if !a {
-                                assert_eq!(self.ours.insert(v), self.theirs.insert(Self::v(v)), "insert({v:#x})");
+                            if !self.try_push(v) {
+                                assert_eq!(
+                                    self.ours.insert(v),
+                                    self.theirs.insert(Self::v(v)),
+                                    "insert({v:#x})"
+                                );
                             }
                         }
                     }
                 }
+            }
+
+            /// `RoaringTreemap::try_push` (0.11.5) only compares with the maximum of the target
+            /// 32-bit bucket, so it accepts values below the global maximum: the reference is
+            /// only called when the push must succeed.
+            fn try_push(&mut self, v: u128) -> bool {
+                let ok = self.theirs.max().is_none_or(|m| v > u128::from(m));
+                assert_eq!(self.ours.try_push(v).is_ok(), ok, "try_push({v:#x})");
+                if ok {
+                    assert!(
+                        self.theirs.try_push(Self::v(v)).is_ok(),
+                        "reference try_push({v:#x})"
+                    );
+                }
+                ok
             }
 
             fn optimize(&mut self) {
@@ -316,16 +386,32 @@ macro_rules! dual {
                 assert_eq!(self.ours.min(), self.theirs.min().map(u128::from), "min");
                 assert_eq!(self.ours.max(), self.theirs.max().map(u128::from), "max");
                 assert_same_seq(self.ours.iter(), self.theirs.iter().map(u128::from), "iter");
-                assert_same_seq(self.ours.iter().rev(), self.theirs.iter().rev().map(u128::from), "iter().rev()");
-                assert_eq!(self.ours.iter().size_hint(), self.theirs.iter().size_hint(), "size_hint");
+                assert_same_seq(
+                    self.ours.iter().rev(),
+                    self.theirs.iter().rev().map(u128::from),
+                    "iter().rev()",
+                );
+                assert_eq!(
+                    self.ours.iter().size_hint(),
+                    self.theirs.iter().size_hint(),
+                    "size_hint"
+                );
             }
 
             #[track_caller]
             fn check_queries(&self, probes: &[u128], ranges: &[RangeSpec], selects: &[u64]) {
                 for &p in probes {
                     if p <= Self::MAX {
-                        assert_eq!(self.ours.contains(p), self.theirs.contains(Self::v(p)), "contains({p:#x})");
-                        assert_eq!(self.ours.rank(p), self.theirs.rank(Self::v(p)), "rank({p:#x})");
+                        assert_eq!(
+                            self.ours.contains(p),
+                            self.theirs.contains(Self::v(p)),
+                            "contains({p:#x})"
+                        );
+                        assert_eq!(
+                            self.ours.rank(p),
+                            self.theirs.rank(Self::v(p)),
+                            "rank({p:#x})"
+                        );
                     } else {
                         assert!(!self.ours.contains(p));
                         assert_eq!(self.ours.rank(p), self.ours.len());
@@ -337,7 +423,11 @@ macro_rules! dual {
                 for r in ranges {
                     let theirs = (narrow::<$v>(r.0), narrow::<$v>(r.1));
                     let ours = ours_range(*r, Self::MAX);
-                    assert_eq!(self.ours.contains_range(ours), self.theirs.contains_range(theirs), "contains_range({r:x?})");
+                    assert_eq!(
+                        self.ours.contains_range(ours),
+                        self.theirs.contains_range(theirs),
+                        "contains_range({r:x?})"
+                    );
                     assert_eq!(
                         self.ours.range_cardinality(ours),
                         self.theirs.range_cardinality(theirs),
@@ -349,13 +439,21 @@ macro_rules! dual {
             fn insert_range(&mut self, r: RangeSpec) {
                 let theirs = (narrow::<$v>(r.0), narrow::<$v>(r.1));
                 let ours = ours_range(r, Self::MAX);
-                assert_eq!(self.ours.insert_range(ours), self.theirs.insert_range(theirs), "insert_range({r:x?})");
+                assert_eq!(
+                    self.ours.insert_range(ours),
+                    self.theirs.insert_range(theirs),
+                    "insert_range({r:x?})"
+                );
             }
 
             fn remove_range(&mut self, r: RangeSpec) {
                 let theirs = (narrow::<$v>(r.0), narrow::<$v>(r.1));
                 let ours = ours_range(r, Self::MAX);
-                assert_eq!(self.ours.remove_range(ours), self.theirs.remove_range(theirs), "remove_range({r:x?})");
+                assert_eq!(
+                    self.ours.remove_range(ours),
+                    self.theirs.remove_range(theirs),
+                    "remove_range({r:x?})"
+                );
             }
 
             fn binop(&self, other: &Self, op: SetOp, form: Form) -> Self {
@@ -366,7 +464,11 @@ macro_rules! dual {
                     SetOp::Sub => &self.theirs - &other.theirs,
                     SetOp::Xor => &self.theirs ^ &other.theirs,
                 };
-                $name { ours, theirs, strict: self.strict }
+                $name {
+                    ours,
+                    theirs,
+                    strict: self.strict,
+                }
             }
 
             #[track_caller]
@@ -374,9 +476,17 @@ macro_rules! dual {
                 let (a, b) = (&self.ours, &other.ours);
                 let (x, y) = (&self.theirs, &other.theirs);
                 assert_eq!(a.union_len(b), x.union_len(y), "union_len");
-                assert_eq!(a.intersection_len(b), x.intersection_len(y), "intersection_len");
+                assert_eq!(
+                    a.intersection_len(b),
+                    x.intersection_len(y),
+                    "intersection_len"
+                );
                 assert_eq!(a.difference_len(b), x.difference_len(y), "difference_len");
-                assert_eq!(a.symmetric_difference_len(b), x.symmetric_difference_len(y), "symmetric_difference_len");
+                assert_eq!(
+                    a.symmetric_difference_len(b),
+                    x.symmetric_difference_len(y),
+                    "symmetric_difference_len"
+                );
                 assert_eq!(a.is_disjoint(b), x.is_disjoint(y), "is_disjoint");
                 assert_eq!(a.is_subset(b), x.is_subset(y), "is_subset");
                 assert_eq!(a.is_superset(b), x.is_superset(y), "is_superset");
@@ -386,8 +496,22 @@ macro_rules! dual {
     };
 }
 
-dual!(Dual32, RoaringBitmap, u32, kinds_bitmap, rrc_bitmap, select_bitmap);
-dual!(Dual64, RoaringTreemap, u64, kinds_treemap, rrc_treemap, select_treemap);
+dual!(
+    Dual32,
+    RoaringBitmap,
+    u32,
+    kinds_bitmap,
+    rrc_bitmap,
+    select_bitmap
+);
+dual!(
+    Dual64,
+    RoaringTreemap,
+    u64,
+    kinds_treemap,
+    rrc_treemap,
+    select_treemap
+);
 
 // -------------------------------------------------------------------------------------------------
 // Iterators
@@ -482,15 +606,32 @@ fn elem(all: &[u128], i: &prop::sample::Index, d: i8) -> u128 {
 
 /// Applies the same steps to both iterators; values outside the domain are skipped.
 #[track_caller]
-fn diff_iter_ops<I: RoaringIter, J: TheirIter>(mut ours: I, mut theirs: J, ops: &[IterOp], all: &[u128], max: u128) {
+fn diff_iter_ops<I: RoaringIter, J: TheirIter>(
+    mut ours: I,
+    mut theirs: J,
+    ops: &[IterOp],
+    all: &[u128],
+    max: u128,
+) {
     assert_eq!(ours.len(), theirs.len_(), "initial len");
     for (step, op) in ops.iter().enumerate() {
         match op {
             IterOp::Next => assert_eq!(ours.next(), theirs.next_(), "step {step}: next"),
-            IterOp::NextBack => assert_eq!(ours.next_back(), theirs.next_back_(), "step {step}: next_back"),
+            IterOp::NextBack => assert_eq!(
+                ours.next_back(),
+                theirs.next_back_(),
+                "step {step}: next_back"
+            ),
             IterOp::Nth(n) => assert_eq!(ours.nth(*n), theirs.nth_(*n), "step {step}: nth({n})"),
-            IterOp::NthBack(n) => assert_eq!(ours.nth_back(*n), theirs.nth_back_(*n), "step {step}: nth_back({n})"),
-            IterOp::AdvanceTo(_) | IterOp::AdvanceBackTo(_) | IterOp::AdvanceToElem(..) | IterOp::AdvanceBackToElem(..) => {
+            IterOp::NthBack(n) => assert_eq!(
+                ours.nth_back(*n),
+                theirs.nth_back_(*n),
+                "step {step}: nth_back({n})"
+            ),
+            IterOp::AdvanceTo(_)
+            | IterOp::AdvanceBackTo(_)
+            | IterOp::AdvanceToElem(..)
+            | IterOp::AdvanceBackToElem(..) => {
                 let (n, back) = match op {
                     IterOp::AdvanceTo(n) => (*n, false),
                     IterOp::AdvanceBackTo(n) => (*n, true),
@@ -499,12 +640,22 @@ fn diff_iter_ops<I: RoaringIter, J: TheirIter>(mut ours: I, mut theirs: J, ops: 
                     _ => unreachable!(),
                 };
                 if n <= max {
+                    // `RoaringTreemap`'s iterator (0.11.5) can move backwards when advanced to a
+                    // position before its current one (after being advanced past the end): the
+                    // reference is only advanced when that moves it forward. `roaring128` is
+                    // always called (advancing backwards must be a no-op).
                     if back {
+                        let forward = ours.clone().next_back().is_some_and(|b| n < b);
                         ours.advance_back_to_(n);
-                        theirs.advance_back_to_(n);
+                        if forward {
+                            theirs.advance_back_to_(n);
+                        }
                     } else {
+                        let forward = ours.clone().next().is_some_and(|f| n > f);
                         ours.advance_to_(n);
-                        theirs.advance_to_(n);
+                        if forward {
+                            theirs.advance_to_(n);
+                        }
                     }
                 }
             }
@@ -515,13 +666,21 @@ fn diff_iter_ops<I: RoaringIter, J: TheirIter>(mut ours: I, mut theirs: J, ops: 
             }
             IterOp::NextRangeBack => {
                 if let Some(expected) = theirs.next_range_back_() {
-                    assert_eq!(ours.next_range_back_(), expected, "step {step}: next_range_back");
+                    assert_eq!(
+                        ours.next_range_back_(),
+                        expected,
+                        "step {step}: next_range_back"
+                    );
                 }
             }
             IterOp::CloneCheck => {}
         }
         assert_eq!(ours.len(), theirs.len_(), "step {step} ({op:?}): len");
-        assert_eq!(ours.size_hint(), (theirs.len_(), Some(theirs.len_())), "step {step} ({op:?}): size_hint");
+        assert_eq!(
+            ours.size_hint(),
+            (theirs.len_(), Some(theirs.len_())),
+            "step {step} ({op:?}): size_hint"
+        );
     }
     loop {
         let (a, b) = (ours.next(), theirs.next_());
@@ -579,20 +738,29 @@ macro_rules! apply_ops {
     ($d:expr, $ops:expr, $repr:expr) => {
         for (i, op) in $ops.iter().enumerate() {
             match op {
-                Op::Insert(v) => assert_eq!($d.ours.insert(*v), $d.theirs.insert((*v).try_into().unwrap()), "insert"),
-                Op::Remove(v) => assert_eq!($d.ours.remove(*v), $d.theirs.remove((*v).try_into().unwrap()), "remove"),
-                Op::TryPush(v) => assert_eq!(
-                    $d.ours.try_push(*v).is_ok(),
-                    $d.theirs.try_push((*v).try_into().unwrap()).is_ok(),
-                    "try_push"
+                Op::Insert(v) => assert_eq!(
+                    $d.ours.insert(*v),
+                    $d.theirs.insert((*v).try_into().unwrap()),
+                    "insert"
                 ),
+                Op::Remove(v) => assert_eq!(
+                    $d.ours.remove(*v),
+                    $d.theirs.remove((*v).try_into().unwrap()),
+                    "remove"
+                ),
+                Op::TryPush(v) => {
+                    $d.try_push(*v);
+                }
                 Op::InsertRange(r) => $d.insert_range(*r),
                 Op::RemoveRange(r) => $d.remove_range(*r),
                 Op::Extend(v) => $d.add(v.clone(), Build::Extend),
                 Op::Append(v) => {
                     // above the current maximum most of the time
                     let base = $d.ours.max().map_or(0, |m| m + 1);
-                    let shifted: Vec<u128> = v.iter().map(|x| base.saturating_add(x & 0xF_FFFF)).collect();
+                    let shifted: Vec<u128> = v
+                        .iter()
+                        .map(|x| base.saturating_add(x & 0xF_FFFF))
+                        .collect();
                     $d.add(shifted, Build::Append)
                 }
                 Op::Optimize => $d.optimize(),
@@ -686,8 +854,22 @@ proptest! {
         }
     }
 
+    /// `RoaringTreemap`'s iterator (0.11.5) loses or resurrects values when `advance_to` /
+    /// `advance_back_to` are mixed with iteration from the other end across 32-bit buckets
+    /// (e.g. `{0, 2^32, 2^33}`: `next()` then `advance_back_to(2^32 + 1)` drops `2^32`). Only
+    /// the reliable mixes are compared here: front only, back only, or `next`/`next_back`
+    /// without advancing. `roaring128` is checked on every mix against the model and against
+    /// `RoaringBitmap`.
     #[test]
-    fn treemap_iter_ops(spec in spec_in(Dom::U64, 4), ops in vec(iter_op_in(Dom::U64), 0..40)) {
+    fn treemap_iter_ops(spec in spec_in(Dom::U64, 4), mode in 0..3u8, ops in vec(iter_op_in(Dom::U64), 0..40)) {
+        let allowed = |op: &IterOp| match op {
+            IterOp::Next | IterOp::Nth(_) => mode != 1,
+            IterOp::NextBack | IterOp::NthBack(_) => mode != 0,
+            IterOp::AdvanceTo(_) | IterOp::AdvanceToElem(..) => mode == 0,
+            IterOp::AdvanceBackTo(_) | IterOp::AdvanceBackToElem(..) => mode == 1,
+            IterOp::NextRange | IterOp::NextRangeBack | IterOp::CloneCheck => false,
+        };
+        let ops: Vec<IterOp> = ops.into_iter().filter(allowed).collect();
         let d = Dual64::build(&spec, false);
         let all: Vec<u128> = d.ours.iter().collect();
         diff_iter_ops(d.ours.iter(), d.theirs.iter(), &ops, &all, Dom::U64.max());
@@ -833,13 +1015,24 @@ proptest! {
 }
 
 #[test]
-fn treemap_full_u64_range_queries() {
+fn treemap_repr_full_u64_ranges() {
     let mut d = Dual64::new(true);
-    d.insert_range(RangeSpec(Bound::Included(u64::MAX as u128 - 70_000), Bound::Unbounded));
+    d.insert_range(RangeSpec(
+        Bound::Included(u64::MAX as u128 - 70_000),
+        Bound::Unbounded,
+    ));
     d.insert_range(RangeSpec(Bound::Unbounded, Bound::Excluded(70_000)));
     d.check();
     d.check_queries(
-        &[0, 69_999, 70_000, u64::MAX as u128 - 70_000, u64::MAX as u128, u64::MAX as u128 + 1, u128::MAX],
+        &[
+            0,
+            69_999,
+            70_000,
+            u64::MAX as u128 - 70_000,
+            u64::MAX as u128,
+            u64::MAX as u128 + 1,
+            u128::MAX,
+        ],
         &[
             RangeSpec(Bound::Unbounded, Bound::Unbounded),
             RangeSpec(Bound::Included(0), Bound::Excluded(70_000)),

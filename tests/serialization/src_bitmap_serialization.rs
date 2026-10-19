@@ -77,7 +77,10 @@ fn serialize_into_failing_writer() {
     let rb: RoaringBitmap128 = (0..10_000u128).map(|v| v * 7).collect();
     let size = rb.serialized_size();
     for cap in [0, 1, 15, 16, 17, size / 2, size - 1] {
-        assert!(rb.serialize_into(Full(cap)).is_err(), "writer with room for {cap} of {size} bytes");
+        assert!(
+            rb.serialize_into(Full(cap)).is_err(),
+            "writer with room for {cap} of {size} bytes"
+        );
     }
     assert!(rb.serialize_into(Full(size)).is_ok());
 }
@@ -89,6 +92,8 @@ fn test_deserialize_overflow_s_plus_len() {
     let res = RoaringBitmap128::deserialize_from(&raw.encode()[..]);
     assert!(res.is_err());
     // the original bytes (32-bit format) are rejected as well
-    let data = vec![59, 48, 0, 0, 255, 130, 254, 59, 48, 2, 0, 41, 255, 255, 166, 197, 4, 0, 2];
+    let data = vec![
+        59, 48, 0, 0, 255, 130, 254, 59, 48, 2, 0, 41, 255, 255, 166, 197, 4, 0, 2,
+    ];
     assert!(RoaringBitmap128::deserialize_from(data.as_slice()).is_err());
 }

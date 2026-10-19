@@ -63,12 +63,18 @@ fn subtraction_preserves_zero_element(off: u128) {
     a -= b;
 
     // The bug: element 0 should still be present but was being removed
-    assert!(a.contains(off), "Element 0 should be present after subtraction");
+    assert!(
+        a.contains(off),
+        "Element 0 should be present after subtraction"
+    );
 
     // Verify the complete result
     let expected = shift_vec(off, [0, 80, 104, 138, 214, 235, 258]);
     let actual: Vec<u128> = a.iter().collect();
-    assert_eq!(actual, expected, "Subtraction result should match expected values");
+    assert_eq!(
+        actual, expected,
+        "Subtraction result should match expected values"
+    );
 }
 
 fn xor(off: u128) {

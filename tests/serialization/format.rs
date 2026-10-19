@@ -11,7 +11,10 @@ use crate::raw::*;
 fn empty_bitmap_bytes() {
     let bytes = serialize(&RoaringBitmap128::new());
     // cookie "RR18", flags 0, count 0
-    assert_eq!(bytes, [b'R', b'R', b'1', b'8', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(
+        bytes,
+        [b'R', b'R', b'1', b'8', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
     let back = RoaringBitmap128::deserialize_from(&bytes[..]).unwrap();
     assert!(back.is_empty());
 }
@@ -129,19 +132,29 @@ fn hand_written_valid_inputs() {
         // one run of one value
         Raw::new(vec![(0, Payload::Run(vec![(7, 0)]))]),
         // a full run container and a full bitmap container
-        Raw::new(vec![(1, Payload::Run(vec![(0, 0xFFFF)])), (2, Payload::bitmap_of(0..=0xFFFF))]),
+        Raw::new(vec![
+            (1, Payload::Run(vec![(0, 0xFFFF)])),
+            (2, Payload::bitmap_of(0..=0xFFFF)),
+        ]),
         // array of 4096 values, bitmap of 4097 values
         Raw::new(vec![
             (5, Payload::Array((0..4096).map(|i| i * 2).collect())),
             (6, Payload::bitmap_of((0..4097).map(|i| i * 2))),
         ]),
         // a run container with more runs than any other representation would need
-        Raw::new(vec![(1 << 100, Payload::Run((0..20_000u16).map(|i| (i * 3, 0)).collect()))]),
+        Raw::new(vec![(
+            1 << 100,
+            Payload::Run((0..20_000u16).map(|i| (i * 3, 0)).collect()),
+        )]),
         // runs in containers 0 and 9 of 10 (run bitset of two bytes)
         Raw::new(
             (0..10u128)
                 .map(|i| {
-                    let p = if i == 0 || i == 9 { Payload::Run(vec![(1, 2)]) } else { Payload::Array(vec![3]) };
+                    let p = if i == 0 || i == 9 {
+                        Payload::Run(vec![(1, 2)])
+                    } else {
+                        Payload::Array(vec![3])
+                    };
                     (i * 1000, p)
                 })
                 .collect(),
@@ -169,7 +182,10 @@ fn hand_written_valid_inputs() {
 fn run_bitset_without_runs_is_accepted() {
     // FORMAT.md: flags bit 0 means "a run-container bitset follows"; an all-zero bitset is
     // well formed.
-    let raw = Raw { flags: Some(1), ..Raw::new(vec![(3, Payload::Array(vec![1, 2, 3]))]) };
+    let raw = Raw {
+        flags: Some(1),
+        ..Raw::new(vec![(3, Payload::Array(vec![1, 2, 3]))])
+    };
     let bytes = raw.encode();
     assert_eq!(bytes.len(), 16 + 1 + 16 + 6);
     let rb = RoaringBitmap128::deserialize_from(&bytes[..]).unwrap();

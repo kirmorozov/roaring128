@@ -21,7 +21,7 @@ enum Op {
     RemoveBiggest(u64),
     Optimize,
     RemoveRunCompression,
-    SetOp(SetOp, Form, SetSpec),
+    Binary(SetOp, Form, SetSpec),
     MultiUnion(Vec<SetSpec>),
     CloneFrom(SetSpec),
     SerializeRoundTrip,
@@ -41,7 +41,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => prop_oneof![0..100u64, 0..100_000u64].prop_map(Op::RemoveBiggest),
         2 => Just(Op::Optimize),
         2 => Just(Op::RemoveRunCompression),
-        4 => (set_op(), form(), set_spec_with(3)).prop_map(|(o, f, s)| Op::SetOp(o, f, s)),
+        4 => (set_op(), form(), set_spec_with(3)).prop_map(|(o, f, s)| Op::Binary(o, f, s)),
         1 => vec(set_spec_with(2), 0..3).prop_map(Op::MultiUnion),
         1 => set_spec_with(2).prop_map(Op::CloneFrom),
         1 => Just(Op::SerializeRoundTrip),
@@ -55,7 +55,11 @@ fn apply(rb: &mut RoaringBitmap128, model: &mut Model, op: &Op) {
         Op::Remove(v) => assert_eq!(rb.remove(*v), model.remove(v), "remove({v:#x})"),
         Op::TryPush(v) => {
             let ok = model.last().is_none_or(|m| v > m);
-            assert_eq!(rb.try_push(*v), if ok { Ok(()) } else { Err(IntegerTooSmall) }, "try_push({v:#x})");
+            assert_eq!(
+                rb.try_push(*v),
+                if ok { Ok(()) } else { Err(IntegerTooSmall) },
+                "try_push({v:#x})"
+            );
             if ok {
                 model.insert(*v);
             }
@@ -72,7 +76,11 @@ fn apply(rb: &mut RoaringBitmap128, model: &mut Model, op: &Op) {
         }
         Op::RemoveRange(r) => {
             let gone: Vec<u128> = r.model_values(model).collect();
-            assert_eq!(rb.remove_range(*r), gone.len() as u64, "remove_range({r:x?})");
+            assert_eq!(
+                rb.remove_range(*r),
+                gone.len() as u64,
+                "remove_range({r:x?})"
+            );
             for v in gone {
                 model.remove(&v);
             }
@@ -84,7 +92,10 @@ fn apply(rb: &mut RoaringBitmap128, model: &mut Model, op: &Op) {
         Op::AppendSorted(values) => {
             // shift the values above the current maximum when possible
             let base = model.last().map_or(0, |m| m.saturating_add(1));
-            let mut s: Vec<u128> = values.iter().map(|v| base.saturating_add(v & 0xF_FFFF)).collect();
+            let mut s: Vec<u128> = values
+                .iter()
+                .map(|v| base.saturating_add(v & 0xF_FFFF))
+                .collect();
             s.sort_unstable();
             s.dedup();
             let valid = match (s.first(), model.last()) {
@@ -121,10 +132,13 @@ fn apply(rb: &mut RoaringBitmap128, model: &mut Model, op: &Op) {
         }
         Op::RemoveRunCompression => {
             rb.remove_run_compression();
-            assert!(!rb.remove_run_compression(), "second remove_run_compression must return false");
+            assert!(
+                !rb.remove_run_compression(),
+                "second remove_run_compression must return false"
+            );
             assert_eq!(rb.statistics().n_run_containers, 0);
         }
-        Op::SetOp(o, f, spec) => {
+        Op::Binary(o, f, spec) => {
             let (other, other_model) = spec.build();
             *rb = apply_op(*o, *f, rb, &other);
             *model = model_op(*o, model, &other_model);

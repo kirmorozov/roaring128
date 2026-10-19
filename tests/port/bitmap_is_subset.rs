@@ -59,7 +59,12 @@ fn arrays(off: u128) {
 }
 
 fn bitmaps_not(off: u128) {
-    let sup = shifted(off, (0..6000).chain(1_000_000..1_006_000).chain(2_000_000..2_010_000));
+    let sup = shifted(
+        off,
+        (0..6000)
+            .chain(1_000_000..1_006_000)
+            .chain(2_000_000..2_010_000),
+    );
     let sub = shifted(off, (100_000..106_000).chain(1_100_000..1_106_000));
     assert!(!sub.is_subset(&sup));
 }
@@ -89,7 +94,9 @@ fn subset_superset_u128() {
     let empty = RoaringBitmap128::new();
     let mut sup = RoaringBitmap128::new();
     sup.insert_range(u128::MAX - 300_000..=u128::MAX);
-    let sub: RoaringBitmap128 = [u128::MAX, u128::MAX - 300_000, u128::MAX - 65_536].into_iter().collect();
+    let sub: RoaringBitmap128 = [u128::MAX, u128::MAX - 300_000, u128::MAX - 65_536]
+        .into_iter()
+        .collect();
     assert!(empty.is_subset(&empty));
     assert!(empty.is_subset(&sup));
     assert!(!sup.is_subset(&empty));

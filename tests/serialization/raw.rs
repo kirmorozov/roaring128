@@ -76,7 +76,13 @@ pub struct Raw {
 
 impl Raw {
     pub fn new(containers: Vec<(u128, Payload)>) -> Raw {
-        Raw { cookie: COOKIE, flags: None, count: None, write_bitset: None, containers }
+        Raw {
+            cookie: COOKIE,
+            flags: None,
+            count: None,
+            write_bitset: None,
+            containers,
+        }
     }
 
     pub fn encode(&self) -> Vec<u8> {

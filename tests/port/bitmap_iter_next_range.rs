@@ -401,13 +401,25 @@ fn next_range_across_mixed_containers(o: u128) {
     assert_eq!(iter.next_range(), Some(key + 0x1_FFFF..=key + 0x2_00FF));
     assert_eq!(iter.next_range(), None);
     let mut iter = bm.iter();
-    assert_eq!(iter.next_range_back(), Some(key + 0x1_FFFF..=key + 0x2_00FF));
+    assert_eq!(
+        iter.next_range_back(),
+        Some(key + 0x1_FFFF..=key + 0x2_00FF)
+    );
     let mut iter = bm.iter();
-    assert_eq!(iter.next_range(), Some(key + 0xFF00..=key + 0x1_0000 + 4999));
-    assert_eq!(iter.next_range(), Some(key + 0x1_0000 + 5001..=key + 0x1_0000 + 5001));
+    assert_eq!(
+        iter.next_range(),
+        Some(key + 0xFF00..=key + 0x1_0000 + 4999)
+    );
+    assert_eq!(
+        iter.next_range(),
+        Some(key + 0x1_0000 + 5001..=key + 0x1_0000 + 5001)
+    );
     let mut iter = bm.iter();
     iter.advance_back_to(key + 0x1_0000 + 4000);
-    assert_eq!(iter.next_range_back(), Some(key + 0xFF00..=key + 0x1_0000 + 4000));
+    assert_eq!(
+        iter.next_range_back(),
+        Some(key + 0xFF00..=key + 0x1_0000 + 4000)
+    );
     assert_eq!(iter.next_range_back(), None);
 }
 
@@ -484,13 +496,22 @@ fn next_range_full_tail_of_the_space_u128() {
     bm.insert_range(u128::MAX - 0x2_FFFF..);
     bm.insert(u128::MAX - 0x3_0001);
     let mut iter = bm.iter();
-    assert_eq!(iter.next_range(), Some(u128::MAX - 0x3_0001..=u128::MAX - 0x3_0001));
+    assert_eq!(
+        iter.next_range(),
+        Some(u128::MAX - 0x3_0001..=u128::MAX - 0x3_0001)
+    );
     assert_eq!(iter.next_range(), Some(u128::MAX - 0x2_FFFF..=u128::MAX));
     assert_eq!(iter.next_range(), None);
     let mut iter = bm.clone().into_iter();
     assert_eq!(iter.next_back(), Some(u128::MAX));
-    assert_eq!(iter.next_range_back(), Some(u128::MAX - 0x2_FFFF..=u128::MAX - 1));
-    assert_eq!(iter.next_range_back(), Some(u128::MAX - 0x3_0001..=u128::MAX - 0x3_0001));
+    assert_eq!(
+        iter.next_range_back(),
+        Some(u128::MAX - 0x2_FFFF..=u128::MAX - 1)
+    );
+    assert_eq!(
+        iter.next_range_back(),
+        Some(u128::MAX - 0x3_0001..=u128::MAX - 0x3_0001)
+    );
     assert_eq!(iter.next_range_back(), None);
 }
 
@@ -500,6 +521,9 @@ fn next_range_u64_boundary_u128() {
     let mut bm = RoaringBitmap128::new();
     bm.insert_range((1u128 << 64) - 3..(1u128 << 64) + 3);
     let mut iter = bm.iter();
-    assert_eq!(iter.next_range(), Some((1u128 << 64) - 3..=(1u128 << 64) + 2));
+    assert_eq!(
+        iter.next_range(),
+        Some((1u128 << 64) - 3..=(1u128 << 64) + 2)
+    );
     assert_eq!(iter.next_range(), None);
 }

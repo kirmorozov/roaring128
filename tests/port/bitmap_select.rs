@@ -78,7 +78,9 @@ proptest! {
     }
 
     #[test]
-    fn proptest_select_u128(values in btree_set(value(), 1000)) {
+    fn proptest_select_u128(values in proptest::collection::vec(value(), 1000)) {
+        // `value()` has repeated special values: collect instead of asking for exactly 1000
+        let values: Model = values.into_iter().collect();
         let bitmap = RoaringBitmap128::from_sorted_iter(values.iter().cloned()).unwrap();
         for (i, value) in values.iter().cloned().enumerate() {
             prop_assert_eq!(bitmap.select(i as u64), Some(value));

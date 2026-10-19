@@ -65,12 +65,19 @@ fn proptest_range_body(off: u128, start: u32, len: u32, extra: &std::collections
         assert_eq!(bitmap.range_cardinality(range.clone()), len as u64);
     }
 
-    for (i, val) in extra.iter().map(|&x| off + x as u128).filter(|x| range.contains(x)).enumerate()
+    for (i, val) in extra
+        .iter()
+        .map(|&x| off + x as u128)
+        .filter(|x| range.contains(x))
+        .enumerate()
     {
         bitmap.remove(val);
         assert!(!bitmap.contains_range(range.clone()));
         assert!(bitmap.contains_range(inverse_empty_range.clone()));
-        assert_eq!(bitmap.range_cardinality(range.clone()), len as u64 - i as u64 - 1);
+        assert_eq!(
+            bitmap.range_cardinality(range.clone()),
+            len as u64 - i as u64 - 1
+        );
     }
     assert_valid(&bitmap);
 }

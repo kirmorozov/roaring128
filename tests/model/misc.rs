@@ -173,7 +173,10 @@ fn lsb0_original(base: u128) {
     bytes.extend([0xff]);
     let rb = RoaringBitmap128::from_lsb0_bytes(base, &bytes);
     assert_eq!(rb.min(), Some(base + CONTAINER_OFFSET));
-    assert_eq!(rb.statistics().n_containers, 1 + u64::from(base % CONTAINER_OFFSET > CONTAINER_OFFSET - 8));
+    assert_eq!(
+        rb.statistics().n_containers,
+        1 + u64::from(base % CONTAINER_OFFSET > CONTAINER_OFFSET - 8)
+    );
 
     let rb = RoaringBitmap128::from_lsb0_bytes(base + 8, &bytes);
     assert_eq!(rb.min(), Some(base + CONTAINER_OFFSET + 8));

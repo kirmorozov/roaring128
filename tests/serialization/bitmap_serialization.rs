@@ -33,8 +33,14 @@ fn test_data_without_runs(off: u128) {
     let model: Model = bitmap.iter().collect();
     let expected = Raw::from_model(&model, false).encode();
     let buffer = serialize(&bitmap);
-    assert!(buffer == expected, "serialized bytes differ from the reference encoding");
-    assert_eq!(RoaringBitmap128::deserialize_from(&expected[..]).unwrap(), bitmap);
+    assert!(
+        buffer == expected,
+        "serialized bytes differ from the reference encoding"
+    );
+    assert_eq!(
+        RoaringBitmap128::deserialize_from(&expected[..]).unwrap(),
+        bitmap
+    );
 }
 
 /// Replaces `test_serialize_with_runs_into_provided_data` / `test_deserialize_with_runs_from_provided_data`.
@@ -45,10 +51,16 @@ fn test_data_with_runs(off: u128) {
     let model: Model = bitmap.iter().collect();
     let expected = Raw::from_model(&model, true).encode();
     let buffer = serialize(&bitmap);
-    assert!(buffer == expected, "serialized bytes differ from the reference encoding");
+    assert!(
+        buffer == expected,
+        "serialized bytes differ from the reference encoding"
+    );
     let back = RoaringBitmap128::deserialize_from(&mut &expected[..]).unwrap();
     assert_eq!(back, bitmap);
-    assert_eq!(back.statistics().n_run_containers, bitmap.statistics().n_run_containers);
+    assert_eq!(
+        back.statistics().n_run_containers,
+        bitmap.statistics().n_run_containers
+    );
 }
 
 fn test_empty(_off: u128) {
@@ -161,8 +173,15 @@ const STRANGE: &[u64] = &[
 
 fn test_strange(off: u128) {
     // the largest value is ~1.1e8: use the wide offsets near the top
-    let off = if off == OFF_NEAR_MAX { OFF_NEAR_MAX_WIDE } else { off };
-    let original = STRANGE.iter().map(|&v| off + v as u128).collect::<RoaringBitmap128>();
+    let off = if off == OFF_NEAR_MAX {
+        OFF_NEAR_MAX_WIDE
+    } else {
+        off
+    };
+    let original = STRANGE
+        .iter()
+        .map(|&v| off + v as u128)
+        .collect::<RoaringBitmap128>();
     let new = serialize_and_deserialize(&original);
     assert_eq!(original, new);
 }
@@ -211,7 +230,10 @@ fn test_bitmap_high_bits_u128() {
     let s = bitmap.statistics();
     assert_eq!(s.n_array_containers, s.n_containers);
     // 16 bytes of header, then 16 bytes of descriptor + 2 bytes per value
-    assert_eq!(buffer.len() as u64, 16 + 16 * s.n_containers + 2 * bitmap.len());
+    assert_eq!(
+        buffer.len() as u64,
+        16 + 16 * s.n_containers + 2 * bitmap.len()
+    );
     let new = RoaringBitmap128::deserialize_from(&buffer[..]).unwrap();
     assert_valid(&new);
     assert_eq!(bitmap, new);
@@ -247,13 +269,19 @@ fn deserialize_run_container_overflow() {
 
 #[test]
 fn deserialize_duplicate_keys() {
-    let raw = Raw::new(vec![(0, Payload::Array(vec![0])), (0, Payload::Array(vec![0]))]);
+    let raw = Raw::new(vec![
+        (0, Payload::Array(vec![0])),
+        (0, Payload::Array(vec![0])),
+    ]);
     assert_invalid_serialization(&raw.encode(), "Duplicate keys in containers");
 }
 
 #[test]
 fn deserialize_unsorted_keys() {
-    let raw = Raw::new(vec![(1, Payload::Array(vec![0])), (0, Payload::Array(vec![0]))]);
+    let raw = Raw::new(vec![
+        (1, Payload::Array(vec![0])),
+        (0, Payload::Array(vec![0])),
+    ]);
     assert_invalid_serialization(&raw.encode(), "Unsorted keys in containers");
 }
 
@@ -272,7 +300,13 @@ fn deserialize_array_unsorted_values() {
 #[test]
 fn deserialize_bitset_incorrect_cardinality() {
     // A full bitmap with the correct cardinality is accepted
-    let raw = Raw::new(vec![(0, Payload::Bitmap { words: vec![u64::MAX; 1024], card: 0x1_0000 })]);
+    let raw = Raw::new(vec![(
+        0,
+        Payload::Bitmap {
+            words: vec![u64::MAX; 1024],
+            card: 0x1_0000,
+        },
+    )]);
     let result = RoaringBitmap128::deserialize_from(&raw.encode()[..]).unwrap();
     assert_eq!(result.len(), 0x1_0000);
     assert_valid(&result);
@@ -280,6 +314,12 @@ fn deserialize_bitset_incorrect_cardinality() {
     // Bitset will no longer have the correct cardinality
     let mut words = vec![u64::MAX; 1024];
     words[0] = 0xFF00_FFFF_FFFF_FFFF;
-    let raw = Raw::new(vec![(0, Payload::Bitmap { words, card: 0x1_0000 })]);
+    let raw = Raw::new(vec![(
+        0,
+        Payload::Bitmap {
+            words,
+            card: 0x1_0000,
+        },
+    )]);
     assert_invalid_serialization(&raw.encode(), "Bitset incorrect cardinality");
 }

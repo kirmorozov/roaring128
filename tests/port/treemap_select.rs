@@ -16,7 +16,7 @@ fn select() {
 /// `far` is `u32::MAX` in the original.
 fn select_multiple_bitmap(far: u128) {
     let mut bitmap = (0..100_000u128).collect::<RoaringBitmap128>();
-    bitmap.append(far..far + 100_000).expect("sorted integers");
+    bitmap.append(far..=far + 99_999).expect("sorted integers");
 
     assert_eq!(bitmap.select(0), Some(0));
     assert_eq!(bitmap.select(99_999), Some(99_999));

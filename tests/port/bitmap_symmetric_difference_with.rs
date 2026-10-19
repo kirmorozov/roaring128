@@ -12,15 +12,27 @@ fn check(mut bitmap1: RoaringBitmap128, bitmap2: RoaringBitmap128, bitmap3: Roar
 }
 
 fn array(off: u128) {
-    check(shifted(off, 0..2000), shifted(off, 1000..3000), shifted(off, (0..1000).chain(2000..3000)));
+    check(
+        shifted(off, 0..2000),
+        shifted(off, 1000..3000),
+        shifted(off, (0..1000).chain(2000..3000)),
+    );
 }
 
 fn no_symmetric_difference(off: u128) {
-    check(shifted(off, 0..2), shifted(off, 0..2), RoaringBitmap128::new());
+    check(
+        shifted(off, 0..2),
+        shifted(off, 0..2),
+        RoaringBitmap128::new(),
+    );
 }
 
 fn array_and_bitmap(off: u128) {
-    check(shifted(off, 0..2000), shifted(off, 1000..8000), shifted(off, (0..1000).chain(2000..8000)));
+    check(
+        shifted(off, 0..2000),
+        shifted(off, 1000..8000),
+        shifted(off, (0..1000).chain(2000..8000)),
+    );
 }
 
 fn bitmap_to_bitmap(off: u128) {
@@ -32,7 +44,11 @@ fn bitmap_to_bitmap(off: u128) {
 }
 
 fn bitmap_to_array(off: u128) {
-    check(shifted(off, 0..6000), shifted(off, 2000..7000), shifted(off, (0..2000).chain(6000..7000)));
+    check(
+        shifted(off, 0..6000),
+        shifted(off, 2000..7000),
+        shifted(off, (0..2000).chain(6000..7000)),
+    );
 }
 
 fn bitmap_and_array_to_bitmap(off: u128) {
@@ -44,13 +60,27 @@ fn bitmap_and_array_to_bitmap(off: u128) {
 }
 
 fn bitmap_and_array_to_array(off: u128) {
-    check(shifted(off, 0..6000), shifted(off, 3000..7000), shifted(off, (0..3000).chain(6000..7000)));
+    check(
+        shifted(off, 0..6000),
+        shifted(off, 3000..7000),
+        shifted(off, (0..3000).chain(6000..7000)),
+    );
 }
 
 fn arrays(off: u128) {
     check(
-        shifted(off, (0..2000).chain(1_000_000..1_002_000).chain(3_000_000..3_001_000)),
-        shifted(off, (1000..3000).chain(1_001_000..1_003_000).chain(2_000_000..2_000_001)),
+        shifted(
+            off,
+            (0..2000)
+                .chain(1_000_000..1_002_000)
+                .chain(3_000_000..3_001_000),
+        ),
+        shifted(
+            off,
+            (1000..3000)
+                .chain(1_001_000..1_003_000)
+                .chain(2_000_000..2_000_001),
+        ),
         shifted(
             off,
             (0..1000)
@@ -65,8 +95,18 @@ fn arrays(off: u128) {
 
 fn bitmaps(off: u128) {
     check(
-        shifted(off, (0..6000).chain(1_000_000..1_012_000).chain(3_000_000..3_010_000)),
-        shifted(off, (3000..7000).chain(1_006_000..1_018_000).chain(2_000_000..2_010_000)),
+        shifted(
+            off,
+            (0..6000)
+                .chain(1_000_000..1_012_000)
+                .chain(3_000_000..3_010_000),
+        ),
+        shifted(
+            off,
+            (3000..7000)
+                .chain(1_006_000..1_018_000)
+                .chain(2_000_000..2_010_000),
+        ),
         shifted(
             off,
             (0..3000)

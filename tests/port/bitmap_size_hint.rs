@@ -36,7 +36,12 @@ fn run(off: u128) {
 }
 
 fn arrays(off: u128) {
-    let bitmap = shifted(off, (0..2000).chain(1_000_000..1_002_000).chain(2_000_000..2_001_000));
+    let bitmap = shifted(
+        off,
+        (0..2000)
+            .chain(1_000_000..1_002_000)
+            .chain(2_000_000..2_001_000),
+    );
     let mut iter = bitmap.iter();
     assert_eq!((5000, Some(5000)), iter.size_hint());
     iter.by_ref().take(3000).for_each(drop);
@@ -46,7 +51,12 @@ fn arrays(off: u128) {
 }
 
 fn bitmaps(off: u128) {
-    let bitmap = shifted(off, (0..6000).chain(1_000_000..1_012_000).chain(2_000_000..2_010_000));
+    let bitmap = shifted(
+        off,
+        (0..6000)
+            .chain(1_000_000..1_012_000)
+            .chain(2_000_000..2_010_000),
+    );
     let mut iter = bitmap.iter();
     assert_eq!((28000, Some(28000)), iter.size_hint());
     iter.by_ref().take(2000).for_each(drop);
@@ -60,8 +70,12 @@ fn bitmaps(off: u128) {
 }
 
 fn runs(off: u128) {
-    let mut bitmap =
-        shifted(off, (0..2000).chain(1_000_000..1_002_000).chain(2_000_000..2_001_000));
+    let mut bitmap = shifted(
+        off,
+        (0..2000)
+            .chain(1_000_000..1_002_000)
+            .chain(2_000_000..2_001_000),
+    );
     bitmap.optimize();
     let mut iter = bitmap.iter();
     assert_eq!((5000, Some(5000)), iter.size_hint());
@@ -73,7 +87,12 @@ fn runs(off: u128) {
 
 /// `into_iter` and back iteration keep an exact size hint too.
 fn into_iter_and_back(off: u128) {
-    let bitmap = shifted(off, (0..6000).chain(1_000_000..1_012_000).chain(2_000_000..2_010_000));
+    let bitmap = shifted(
+        off,
+        (0..6000)
+            .chain(1_000_000..1_012_000)
+            .chain(2_000_000..2_010_000),
+    );
     let mut iter = bitmap.into_iter();
     assert_eq!(iter.len(), 28000);
     iter.by_ref().rev().take(15000).for_each(drop);
@@ -83,7 +102,15 @@ fn into_iter_and_back(off: u128) {
     assert_eq!(iter.len(), 6000);
 }
 
-offset_variants!(array, bitmap, run, arrays, bitmaps, runs, into_iter_and_back);
+offset_variants!(
+    array,
+    bitmap,
+    run,
+    arrays,
+    bitmaps,
+    runs,
+    into_iter_and_back
+);
 
 #[test]
 fn size_hint_above_u32_max_u128() {

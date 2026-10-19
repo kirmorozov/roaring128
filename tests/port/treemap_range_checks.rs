@@ -37,7 +37,10 @@ fn empty_range_always_contained() {
         assert!(rb.contains_range(u128::MAX..0));
     }
     assert!(rb.contains_range((std::ops::Bound::Excluded(3), std::ops::Bound::Excluded(3))));
-    assert!(rb.contains_range((std::ops::Bound::Excluded(u128::MAX), std::ops::Bound::Unbounded)));
+    assert!(rb.contains_range((
+        std::ops::Bound::Excluded(u128::MAX),
+        std::ops::Bound::Unbounded
+    )));
 }
 
 #[test]
@@ -53,7 +56,10 @@ fn empty_range_cardinality_is_zero() {
         assert_eq!(full.range_cardinality(u128::MAX..0), 0);
     }
     assert_eq!(
-        full.range_cardinality((std::ops::Bound::Excluded(u128::MAX), std::ops::Bound::Unbounded)),
+        full.range_cardinality((
+            std::ops::Bound::Excluded(u128::MAX),
+            std::ops::Bound::Unbounded
+        )),
         0
     );
 }
@@ -116,12 +122,19 @@ fn multi_bucket_gap_not_contained(base: u128) {
     assert!(!rb.contains_range(base..base + 3 * BUCKET));
     assert!(rb.contains_range(base..base + BUCKET));
     assert!(rb.contains_range(base + 2 * BUCKET..base + 3 * BUCKET));
-    assert_eq!(rb.range_cardinality(base..base + 3 * BUCKET), 2 * BUCKET as u64);
+    assert_eq!(
+        rb.range_cardinality(base..base + 3 * BUCKET),
+        2 * BUCKET as u64
+    );
     assert_eq!(rb.len(), 2 * BUCKET as u64);
     assert_valid(&rb);
 }
 
-base_variants!(single_bucket_contained, cross_bucket_boundary, multi_bucket_gap_not_contained);
+base_variants!(
+    single_bucket_contained,
+    cross_bucket_boundary,
+    multi_bucket_gap_not_contained
+);
 
 #[test]
 fn u64_max_boundary() {
@@ -207,7 +220,11 @@ fn proptest_range_body(base: u128, start: u64, len: u64, extra: &std::collection
         assert_eq!(rb.range_cardinality(range.clone()), len);
     }
 
-    for (i, val) in extra.iter().map(|&x| base + x as u128).filter(|x| range.contains(x)).enumerate()
+    for (i, val) in extra
+        .iter()
+        .map(|&x| base + x as u128)
+        .filter(|x| range.contains(x))
+        .enumerate()
     {
         rb.remove(val);
         assert!(!rb.contains_range(range.clone()));

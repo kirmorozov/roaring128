@@ -34,7 +34,9 @@ fn rank_roaring_bitmaps_at(bitmap_max: u128) {
 
     // end of treemap
     let m = u64::MAX as u128;
-    let below_u64_max = (bitmap_max - 1000..bitmap_max + 5000).filter(|&v| v <= m).count() as u64;
+    let below_u64_max = (bitmap_max - 1000..bitmap_max + 5000)
+        .filter(|&v| v <= m)
+        .count() as u64;
     assert_eq!(treemap.rank(m), below_u64_max);
     assert_eq!(treemap.rank(u128::MAX), 6000);
 }

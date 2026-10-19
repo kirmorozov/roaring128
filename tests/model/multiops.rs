@@ -20,7 +20,12 @@ fn fold_model(models: &[Model], op: SetOp) -> Model {
 
 fn check_all(bitmaps: &[RoaringBitmap128], models: &[Model]) {
     let refs: Vec<&RoaringBitmap128> = bitmaps.iter().collect();
-    for (op, name) in [(SetOp::Or, "union"), (SetOp::And, "intersection"), (SetOp::Sub, "difference"), (SetOp::Xor, "symmetric_difference")] {
+    for (op, name) in [
+        (SetOp::Or, "union"),
+        (SetOp::And, "intersection"),
+        (SetOp::Sub, "difference"),
+        (SetOp::Xor, "symmetric_difference"),
+    ] {
         let expected = fold_model(models, op);
         let run = |owned: Vec<RoaringBitmap128>| match op {
             SetOp::Or => owned.union(),
@@ -56,9 +61,11 @@ fn check_all(bitmaps: &[RoaringBitmap128], models: &[Model]) {
         assert_matches(&got, &expected);
         let got = run_ref(refs.clone());
         assert_matches(&got, &expected);
-        let got = run_try(bitmaps.to_vec()).unwrap_or_else(|e| panic!("{name}: unexpected error {e}"));
+        let got =
+            run_try(bitmaps.to_vec()).unwrap_or_else(|e| panic!("{name}: unexpected error {e}"));
         assert_matches(&got, &expected);
-        let got = run_try_ref(refs.clone()).unwrap_or_else(|e| panic!("{name}: unexpected error {e}"));
+        let got =
+            run_try_ref(refs.clone()).unwrap_or_else(|e| panic!("{name}: unexpected error {e}"));
         assert_matches(&got, &expected);
     }
 }
@@ -68,7 +75,13 @@ fn items(bitmaps: &[RoaringBitmap128], k: usize) -> Vec<Result<RoaringBitmap128,
     bitmaps
         .iter()
         .enumerate()
-        .map(|(i, b)| if i == k || i == k + 2 { Err(i) } else { Ok(b.clone()) })
+        .map(|(i, b)| {
+            if i == k || i == k + 2 {
+                Err(i)
+            } else {
+                Ok(b.clone())
+            }
+        })
         .collect()
 }
 

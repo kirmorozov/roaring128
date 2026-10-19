@@ -42,8 +42,11 @@ proptest! {
         let all = sorted(&model);
         prop_assert_eq!(rb.iter().count(), all.len());
         prop_assert_eq!(rb.clone().into_iter().count(), all.len());
-        prop_assert_eq!(rb.iter().last(), all.last().copied());
-        prop_assert_eq!(rb.clone().into_iter().last(), all.last().copied());
+        // `last` is part of the iterator API under test
+        #[allow(clippy::double_ended_iterator_last)]
+        let (last, last_owned) = (rb.iter().last(), rb.clone().into_iter().last());
+        prop_assert_eq!(last, all.last().copied());
+        prop_assert_eq!(last_owned, all.last().copied());
         let folded = rb.iter().fold(Vec::with_capacity(all.len()), |mut acc, v| { acc.push(v); acc });
         prop_assert!(folded == all);
         let rfolded = rb.iter().rfold(Vec::with_capacity(all.len()), |mut acc, v| { acc.push(v); acc });

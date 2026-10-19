@@ -63,7 +63,20 @@ fn smoke_u128_max() {
 }
 
 fn remove_range(off: u128) {
-    let ranges = [0u64, 1, 63, 64, 65, 100, 4096 - 1, 4096, 4096 + 1, 65536 - 1, 65536, 65536 + 1];
+    let ranges = [
+        0u64,
+        1,
+        63,
+        64,
+        65,
+        100,
+        4096 - 1,
+        4096,
+        4096 + 1,
+        65536 - 1,
+        65536,
+        65536 + 1,
+    ];
     let full = shifted(off, 0..=65536);
     for (i, &a) in ranges.iter().enumerate() {
         for &b in &ranges[i..] {
@@ -126,7 +139,10 @@ fn remove_range_bitmap(off: u128) {
     // remove [1, 3), [3, 5), ..
     let mut bitmap = shifted(off, 0..4096 + 1000);
     for i in 0..1000 / 2 {
-        assert_eq!(bitmap.remove_range(off + i * 2 + 1..off + (i + 1) * 2 + 1), 2);
+        assert_eq!(
+            bitmap.remove_range(off + i * 2 + 1..off + (i + 1) * 2 + 1),
+            2
+        );
     }
     assert_valid(&bitmap);
 }
@@ -250,8 +266,9 @@ fn optimize_at_top_of_the_space() {
 
 #[test]
 fn optimize_sparse_uuids_is_noop() {
-    let mut bitmap: RoaringBitmap128 =
-        (0..1000u128).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)).collect();
+    let mut bitmap: RoaringBitmap128 = (0..1000u128)
+        .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835))
+        .collect();
     let before = bitmap.clone();
     assert!(!bitmap.optimize());
     assert!(!bitmap.remove_run_compression());
@@ -260,8 +277,9 @@ fn optimize_sparse_uuids_is_noop() {
 
 #[test]
 fn remove_range_unbounded_u128() {
-    let mut bitmap: RoaringBitmap128 =
-        [0u128, 1, 1 << 64, 1 << 100, u128::MAX - 1, u128::MAX].into_iter().collect();
+    let mut bitmap: RoaringBitmap128 = [0u128, 1, 1 << 64, 1 << 100, u128::MAX - 1, u128::MAX]
+        .into_iter()
+        .collect();
     assert_eq!(bitmap.remove_range(u128::MAX..), 1);
     assert_eq!(bitmap.remove_range(..1), 1);
     assert_eq!(bitmap.remove_range((1 << 64) + 1..(1 << 100)), 0);
@@ -302,12 +320,21 @@ fn default_and_clear() {
 #[test]
 fn debug_format() {
     let small = RoaringBitmap128::from([1, 2, u128::MAX]);
-    assert_eq!(format!("{small:?}"), format!("RoaringBitmap128<[1, 2, {}]>", u128::MAX));
-    assert_eq!(format!("{:?}", RoaringBitmap128::new()), "RoaringBitmap128<[]>");
+    assert_eq!(
+        format!("{small:?}"),
+        format!("RoaringBitmap128<[1, 2, {}]>", u128::MAX)
+    );
+    assert_eq!(
+        format!("{:?}", RoaringBitmap128::new()),
+        "RoaringBitmap128<[]>"
+    );
     let mut big: RoaringBitmap128 = (0..16u128).collect();
     big.insert(1 << 64);
     assert_eq!(
         format!("{big:?}"),
-        format!("RoaringBitmap128<17 values between 0 and {} in 2 containers>", 1u128 << 64)
+        format!(
+            "RoaringBitmap128<17 values between 0 and {} in 2 containers>",
+            1u128 << 64
+        )
     );
 }

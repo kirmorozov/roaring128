@@ -33,7 +33,12 @@ fn bitmap(off: u128) {
 }
 
 fn arrays(off: u128) {
-    let original = shifted(off, (0..2000).chain(1_000_000..1_002_000).chain(2_000_000..2_001_000));
+    let original = shifted(
+        off,
+        (0..2000)
+            .chain(1_000_000..1_002_000)
+            .chain(2_000_000..2_001_000),
+    );
     let clone = RoaringBitmap128::from_iter(&original);
     let clone2 = RoaringBitmap128::from_iter(original.clone());
 
@@ -42,8 +47,12 @@ fn arrays(off: u128) {
 }
 
 fn bitmaps(off: u128) {
-    let original =
-        shifted(off, (0..100_000).chain(1_000_000..1_012_000).chain(2_000_000..2_010_000));
+    let original = shifted(
+        off,
+        (0..100_000)
+            .chain(1_000_000..1_012_000)
+            .chain(2_000_000..2_010_000),
+    );
     let clone = RoaringBitmap128::from_iter(&original);
     let clone2 = RoaringBitmap128::from_iter(original.clone());
 
@@ -175,11 +184,17 @@ fn count_and_fold_on_runs_u128() {
     bitmap.insert_range((1 << 64) - 100_000..(1 << 64) + 100_000);
     assert_eq!(bitmap.iter().count(), 200_000);
     assert_eq!(bitmap.clone().into_iter().count(), 200_000);
-    let sum = bitmap.iter().fold(0u128, |acc, v| acc + (v - ((1 << 64) - 100_000)));
+    let sum = bitmap
+        .iter()
+        .fold(0u128, |acc, v| acc + (v - ((1 << 64) - 100_000)));
     assert_eq!(sum, (0..200_000u128).sum::<u128>());
-    let rsum = bitmap.iter().rfold(0u128, |acc, v| acc + (v - ((1 << 64) - 100_000)));
+    let rsum = bitmap
+        .iter()
+        .rfold(0u128, |acc, v| acc + (v - ((1 << 64) - 100_000)));
     assert_eq!(rsum, sum);
-    assert_eq!(bitmap.iter().last(), Some((1 << 64) + 99_999));
+    #[allow(clippy::double_ended_iterator_last)]
+    let last = bitmap.iter().last();
+    assert_eq!(last, Some((1 << 64) + 99_999));
     assert_eq!(Iterator::max(bitmap.iter()), Some((1 << 64) + 99_999));
     assert_eq!(Iterator::min(bitmap.iter()), Some((1 << 64) - 100_000));
 }
@@ -325,7 +340,9 @@ proptest! {
     }
 
     #[test]
-    fn interleaved_iter_u128(values in btree_set(value(), 50_000..=100_000)) {
+    fn interleaved_iter_u128(
+        values in proptest::collection::vec(value(), 50_000..=100_000).prop_map(|v| v.into_iter().collect::<Model>())
+    ) {
         let bitmap = RoaringBitmap128::from_sorted_iter(values.iter().cloned()).unwrap();
 
         assert!(outside_in(values.iter().copied()).eq(outside_in(&bitmap)));

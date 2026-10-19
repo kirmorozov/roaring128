@@ -66,7 +66,10 @@ fn insert_range_at(off: u128) {
     assert_valid(&bitmap);
 
     bitmap.clear();
-    assert_eq!(bitmap.insert_range(off + 2 * SIGMA..=off + 4 * SIGMA), 2 * SIGMA as u64 + 1);
+    assert_eq!(
+        bitmap.insert_range(off + 2 * SIGMA..=off + 4 * SIGMA),
+        2 * SIGMA as u64 + 1
+    );
 
     assert_eq!(bitmap.min(), Some(off + 2 * SIGMA));
     assert_eq!(bitmap.max(), Some(off + 4 * SIGMA));
@@ -84,7 +87,10 @@ wide_offset_variants!(insert_range_at);
 fn insert_range_ending_at_u128_max() {
     const SIGMA: u128 = u32::MAX as u128;
     let mut bitmap = RoaringBitmap128::new();
-    assert_eq!(bitmap.insert_range(u128::MAX - 2 * SIGMA..), 2 * SIGMA as u64 + 1);
+    assert_eq!(
+        bitmap.insert_range(u128::MAX - 2 * SIGMA..),
+        2 * SIGMA as u64 + 1
+    );
     assert_eq!(bitmap.min(), Some(u128::MAX - 2 * SIGMA));
     assert_eq!(bitmap.max(), Some(u128::MAX));
     assert_eq!(bitmap.insert_range(u128::MAX - 2 * SIGMA..=u128::MAX), 0);
@@ -96,7 +102,18 @@ fn insert_range_ending_at_u128_max() {
 }
 
 fn remove_range(off: u128) {
-    let ranges = [0u64, 1, 63, 64, 65, 100, 4096 - 1, 4096, 4096 + 1, 65536 - 1];
+    let ranges = [
+        0u64,
+        1,
+        63,
+        64,
+        65,
+        100,
+        4096 - 1,
+        4096,
+        4096 + 1,
+        65536 - 1,
+    ];
     let full = shifted(off, 0..=65536);
     for (i, &a) in ranges.iter().enumerate() {
         for &b in &ranges[i..] {
@@ -160,7 +177,10 @@ fn optimize_after_emptying_containers(off: u128) {
     assert_eq!(stats.cardinality, 1);
 
     assert!(!bitmap.optimize());
-    assert_eq!(bitmap.iter().collect::<Vec<_>>(), vec![off + (1 << 32) + 1337]);
+    assert_eq!(
+        bitmap.iter().collect::<Vec<_>>(),
+        vec![off + (1 << 32) + 1337]
+    );
 }
 
 fn optimize_works_for_single_shard(off: u128) {
@@ -184,4 +204,7 @@ fn optimize_returns_false_when_nothing_changes(off: u128) {
 }
 
 wide_offset_variants!(optimize_after_emptying_containers);
-offset_variants!(optimize_works_for_single_shard, optimize_returns_false_when_nothing_changes);
+offset_variants!(
+    optimize_works_for_single_shard,
+    optimize_returns_false_when_nothing_changes
+);

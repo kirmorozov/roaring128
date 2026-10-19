@@ -76,23 +76,36 @@ fn bad_cookie() {
                 let mut b = bytes.clone();
                 b[i] ^= 1 << bit;
                 assert_rejected(&b, "cookie");
-                assert!(RoaringBitmap128::deserialize_unchecked_from(&b[..]).is_err(), "unchecked: cookie");
+                assert!(
+                    RoaringBitmap128::deserialize_unchecked_from(&b[..]).is_err(),
+                    "unchecked: cookie"
+                );
             }
         }
     }
     // the 32-bit Roaring cookies are not accepted either
     for cookie in [12346u32, 12347] {
-        let raw = Raw { cookie, ..Raw::new(vec![(0, Payload::Array(vec![1]))]) };
+        let raw = Raw {
+            cookie,
+            ..Raw::new(vec![(0, Payload::Array(vec![1]))])
+        };
         assert_rejected(&raw.encode(), "32-bit cookie");
     }
 }
 
 #[test]
 fn bad_flags() {
-    let containers = vec![(0, Payload::Array(vec![1, 2])), (9, Payload::Run(vec![(0, 9)]))];
+    let containers = vec![
+        (0, Payload::Array(vec![1, 2])),
+        (9, Payload::Run(vec![(0, 9)])),
+    ];
     for bit in 1..32 {
         for base in [0u32, 1] {
-            let raw = Raw { flags: Some(base | (1 << bit)), write_bitset: Some(base == 1), ..Raw::new(containers.clone()) };
+            let raw = Raw {
+                flags: Some(base | (1 << bit)),
+                write_bitset: Some(base == 1),
+                ..Raw::new(containers.clone())
+            };
             assert_rejected(&raw.encode(), &format!("flags {:#x}", base | (1 << bit)));
             unchecked_does_not_crash(&raw.encode());
         }
@@ -116,7 +129,10 @@ fn unsorted_and_duplicate_keys() {
         unchecked_does_not_crash(&raw.encode());
     }
     // equal keys with different kinds
-    let raw = Raw::new(vec![(3, Payload::Array(vec![1])), (3, Payload::Run(vec![(5, 5)]))]);
+    let raw = Raw::new(vec![
+        (3, Payload::Array(vec![1])),
+        (3, Payload::Run(vec![(5, 5)])),
+    ]);
     assert_rejected(&raw.encode(), "duplicate key array/run");
 }
 
@@ -131,8 +147,14 @@ fn invalid_arrays() {
         (0..4096).rev().collect::<Vec<u16>>(),
         (0..4096).map(|i| i / 2).collect(),
     ] {
-        let raw = Raw::new(vec![(0, Payload::Array(vec![1])), (7, Payload::Array(values.clone()))]);
-        assert_rejected(&raw.encode(), &format!("array {:?}", &values[..values.len().min(8)]));
+        let raw = Raw::new(vec![
+            (0, Payload::Array(vec![1])),
+            (7, Payload::Array(values.clone())),
+        ]);
+        assert_rejected(
+            &raw.encode(),
+            &format!("array {:?}", &values[..values.len().min(8)]),
+        );
         unchecked_does_not_crash(&raw.encode());
     }
 }
@@ -140,39 +162,67 @@ fn invalid_arrays() {
 #[test]
 fn bitmap_popcount_mismatch() {
     let indices = || (0..5000u16).map(|i| i * 3);
-    let Payload::Bitmap { words, card } = Payload::bitmap_of(indices()) else { unreachable!() };
+    let Payload::Bitmap { words, card } = Payload::bitmap_of(indices()) else {
+        unreachable!()
+    };
     assert_eq!(card, 5000);
-    let ok = Raw::new(vec![(1, Payload::Bitmap { words: words.clone(), card })]);
+    let ok = Raw::new(vec![(
+        1,
+        Payload::Bitmap {
+            words: words.clone(),
+            card,
+        },
+    )]);
     assert!(RoaringBitmap128::deserialize_from(&ok.encode()[..]).is_ok());
     for declared in [4097u32, 4999, 5001, 0x1_0000] {
-        let raw = Raw::new(vec![(1, Payload::Bitmap { words: words.clone(), card: declared })]);
-        assert_rejected(&raw.encode(), &format!("bitmap declared {declared}, popcount 5000"));
+        let raw = Raw::new(vec![(
+            1,
+            Payload::Bitmap {
+                words: words.clone(),
+                card: declared,
+            },
+        )]);
+        assert_rejected(
+            &raw.encode(),
+            &format!("bitmap declared {declared}, popcount 5000"),
+        );
         unchecked_does_not_crash(&raw.encode());
     }
     // a bitmap container with at most 4096 bits set is not a valid bitmap (descriptor > 4096)
-    let Payload::Bitmap { words, .. } = Payload::bitmap_of(0..4096) else { unreachable!() };
+    let Payload::Bitmap { words, .. } = Payload::bitmap_of(0..4096) else {
+        unreachable!()
+    };
     let raw = Raw::new(vec![(1, Payload::Bitmap { words, card: 4097 })]);
     assert_rejected(&raw.encode(), "4096 bits declared as 4097");
-    let raw = Raw::new(vec![(1, Payload::Bitmap { words: vec![0; 1024], card: 4097 })]);
+    let raw = Raw::new(vec![(
+        1,
+        Payload::Bitmap {
+            words: vec![0; 1024],
+            card: 4097,
+        },
+    )]);
     assert_rejected(&raw.encode(), "empty bitmap");
 }
 
 #[test]
 fn invalid_runs() {
     for runs in [
-        vec![(0u16, 4u16), (1, 0)],     // overlapping (starts inside the first run)
-        vec![(0, 0), (1, 0)],           // adjacent
-        vec![(10, 5), (16, 0)],         // adjacent
-        vec![(10, 5), (15, 3)],         // overlapping by one
-        vec![(20, 0), (10, 0)],         // unsorted
-        vec![(10, 0), (10, 0)],         // duplicate
-        vec![(0xFFFE, 4)],              // overflow
-        vec![(0xFFFF, 1)],              // overflow by one
-        vec![(1, 0xFFFF)],              // overflow
-        vec![(0, 0xFFFF), (0, 0)],      // full then duplicate
-        vec![(100, 10), (50, 10)],      // unsorted, disjoint
+        vec![(0u16, 4u16), (1, 0)], // overlapping (starts inside the first run)
+        vec![(0, 0), (1, 0)],       // adjacent
+        vec![(10, 5), (16, 0)],     // adjacent
+        vec![(10, 5), (15, 3)],     // overlapping by one
+        vec![(20, 0), (10, 0)],     // unsorted
+        vec![(10, 0), (10, 0)],     // duplicate
+        vec![(0xFFFE, 4)],          // overflow
+        vec![(0xFFFF, 1)],          // overflow by one
+        vec![(1, 0xFFFF)],          // overflow
+        vec![(0, 0xFFFF), (0, 0)],  // full then duplicate
+        vec![(100, 10), (50, 10)],  // unsorted, disjoint
     ] {
-        let raw = Raw::new(vec![(0, Payload::Array(vec![1])), (1 << 90, Payload::Run(runs.clone()))]);
+        let raw = Raw::new(vec![
+            (0, Payload::Array(vec![1])),
+            (1 << 90, Payload::Run(runs.clone())),
+        ]);
         assert_rejected(&raw.encode(), &format!("runs {runs:?}"));
         unchecked_does_not_crash(&raw.encode());
     }

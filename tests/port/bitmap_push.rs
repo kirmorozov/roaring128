@@ -25,15 +25,27 @@ macro_rules! test_from_sorted_iter {
 }
 
 fn append(off: u128) {
-    test_from_sorted_iter!((0..1_000_000u128).map(|x| off + 13 * x).collect::<Vec<u128>>());
+    test_from_sorted_iter!(
+        (0..1_000_000u128)
+            .map(|x| off + 13 * x)
+            .collect::<Vec<u128>>()
+    );
     test_from_sorted_iter!(shift_vec(off, [1, 2, 4, 5, 7, 8, 9]));
 }
 
 fn append_tree(off: u128) {
     // the treemap flavour used `u64` values spread over 2^32 buckets
-    test_from_sorted_iter!((0..1_000_000u128).map(|x| off + 13 * x).collect::<Vec<u128>>());
+    test_from_sorted_iter!(
+        (0..1_000_000u128)
+            .map(|x| off + 13 * x)
+            .collect::<Vec<u128>>()
+    );
     test_from_sorted_iter!(shift_vec(off, [1, 2, 4, 5, 7, 8, 9]));
-    test_from_sorted_iter!((0..10_000u128).map(|x| off + (x << 10)).collect::<Vec<u128>>());
+    test_from_sorted_iter!(
+        (0..10_000u128)
+            .map(|x| off + (x << 10))
+            .collect::<Vec<u128>>()
+    );
 }
 
 offset_variants!(append, append_tree);
@@ -45,7 +57,12 @@ fn append_empty() {
 
 #[test]
 fn append_error() {
-    match [100u128].iter().cloned().collect::<RoaringBitmap128>().append(vec![10, 20, 0]) {
+    match [100u128]
+        .iter()
+        .cloned()
+        .collect::<RoaringBitmap128>()
+        .append(vec![10, 20, 0])
+    {
         Ok(_) => {
             panic!("The 0th element in the iterator was < the max of the bitmap")
         }
@@ -54,7 +71,12 @@ fn append_error() {
         }
     }
 
-    match [100u128].iter().cloned().collect::<RoaringBitmap128>().append(vec![200, 201, 201]) {
+    match [100u128]
+        .iter()
+        .cloned()
+        .collect::<RoaringBitmap128>()
+        .append(vec![200, 201, 201])
+    {
         Ok(_) => {
             panic!("The 3rd element in the iterator was < 2nd")
         }
@@ -67,10 +89,15 @@ fn append_error() {
 #[test]
 fn append_error_keeps_the_valid_prefix_u128() {
     let mut rb = RoaringBitmap128::from([1 << 64]);
-    let err = rb.append([(1 << 64) + 1, 1 << 100, u128::MAX - 1, 5, u128::MAX]).unwrap_err();
+    let err = rb
+        .append([(1 << 64) + 1, 1 << 100, u128::MAX - 1, 5, u128::MAX])
+        .unwrap_err();
     assert_eq!(err.valid_until(), 3);
     assert_valid(&rb);
-    assert!(rb.iter().eq([1 << 64, (1 << 64) + 1, 1 << 100, u128::MAX - 1]));
+    assert!(
+        rb.iter()
+            .eq([1 << 64, (1 << 64) + 1, 1 << 100, u128::MAX - 1])
+    );
 
     // equal to the maximum is an error too
     let err = rb.append([u128::MAX - 1]).unwrap_err();
@@ -93,7 +120,10 @@ fn from_sorted_iter_errors_u128() {
     assert_valid(&rb);
     assert_eq!(rb.len(), 3);
     // Display of the error
-    assert_eq!(err.to_string(), "integers are ordered up to the 2th element");
+    assert_eq!(
+        err.to_string(),
+        "integers are ordered up to the 2th element"
+    );
 }
 
 #[test]
@@ -110,8 +140,14 @@ fn push_and_try_push_u128() {
     assert!(!rb.push(u128::MAX));
     assert_eq!(rb.try_push(u128::MAX), Err(IntegerTooSmall));
     assert_valid(&rb);
-    assert!(rb.iter().eq([u64::MAX as u128, 1 << 64, u128::MAX - 1, u128::MAX]));
-    assert_eq!(IntegerTooSmall.to_string(), "inserted integer is smaller than the largest integer");
+    assert!(
+        rb.iter()
+            .eq([u64::MAX as u128, 1 << 64, u128::MAX - 1, u128::MAX])
+    );
+    assert_eq!(
+        IntegerTooSmall.to_string(),
+        "inserted integer is smaller than the largest integer"
+    );
 }
 
 #[test]

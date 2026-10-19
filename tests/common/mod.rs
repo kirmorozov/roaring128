@@ -53,8 +53,16 @@ pub fn config(default_cases: u32) -> ProptestConfig {
     ProptestConfig {
         cases,
         failure_persistence: None,
-        max_shrink_iters: if env_set("PROPTEST_MAX_SHRINK_ITERS") { base.max_shrink_iters } else { 2048 },
-        max_shrink_time: if env_set("PROPTEST_MAX_SHRINK_TIME") { base.max_shrink_time } else { 20_000 },
+        max_shrink_iters: if env_set("PROPTEST_MAX_SHRINK_ITERS") {
+            base.max_shrink_iters
+        } else {
+            2048
+        },
+        max_shrink_time: if env_set("PROPTEST_MAX_SHRINK_TIME") {
+            base.max_shrink_time
+        } else {
+            20_000
+        },
         ..base
     }
 }
@@ -193,7 +201,11 @@ pub fn assert_matches(rb: &RoaringBitmap128, model: &Model) {
     assert_eq!(rb.min(), model.first().copied(), "min");
     assert_eq!(rb.max(), model.last().copied(), "max");
     let it = rb.iter();
-    assert_eq!(it.size_hint(), (model.len(), Some(model.len())), "size_hint");
+    assert_eq!(
+        it.size_hint(),
+        (model.len(), Some(model.len())),
+        "size_hint"
+    );
     assert_same_seq(it, model.iter().copied(), "iter");
 }
 
@@ -418,7 +430,8 @@ impl RangeSpec {
     /// The model values inside the range.
     pub fn model_values<'a>(&self, model: &'a Model) -> impl Iterator<Item = u128> + 'a {
         let b = self.bounds();
-        b.into_iter().flat_map(move |(lo, hi)| model.range(lo..=hi).copied())
+        b.into_iter()
+            .flat_map(move |(lo, hi)| model.range(lo..=hi).copied())
     }
 
     pub fn model_count(&self, model: &Model) -> u64 {
@@ -486,11 +499,20 @@ pub enum Piece {
     Points { anchor: u128, offsets: Vec<u32> },
     /// Random bits in one key: `words[i]` bit `b` is the index `64 * i + b` (array or bitmap
     /// containers, depending on the number of words).
-    Dense { anchor: u128, key: u8, words: Vec<u64> },
+    Dense {
+        anchor: u128,
+        key: u8,
+        words: Vec<u64>,
+    },
     /// A contiguous interval (run containers; long ones span several keys).
     Interval { anchor: u128, start: u32, len: u32 },
     /// `count` values with a constant stride (not run friendly; bitmaps when dense).
-    Strided { anchor: u128, start: u32, stride: u8, count: u16 },
+    Strided {
+        anchor: u128,
+        start: u32,
+        stride: u8,
+        count: u16,
+    },
     /// Random values, virtually one per key (the UUID case).
     Sparse { values: Vec<u128> },
     /// `n` even indices of one key, `n` around the array limit of 4096.
@@ -505,9 +527,10 @@ impl Piece {
     /// The values of this piece (unsorted, may contain duplicates).
     pub fn values(&self) -> Vec<u128> {
         match self {
-            Piece::Points { anchor, offsets } => {
-                offsets.iter().map(|&o| anchor.saturating_add(o as u128)).collect()
-            }
+            Piece::Points { anchor, offsets } => offsets
+                .iter()
+                .map(|&o| anchor.saturating_add(o as u128))
+                .collect(),
             Piece::Dense { anchor, key, words } => {
                 let base = key_base(*anchor, *key);
                 let mut out = Vec::new();
@@ -525,7 +548,12 @@ impl Piece {
                 let hi = lo.saturating_add(*len as u128 - 1);
                 (lo..=hi).collect()
             }
-            Piece::Strided { anchor, start, stride, count } => {
+            Piece::Strided {
+                anchor,
+                start,
+                stride,
+                count,
+            } => {
                 let lo = anchor.saturating_add(*start as u128);
                 (0..*count as u128)
                     .map_while(|k| lo.checked_add(k * *stride as u128))
@@ -586,7 +614,10 @@ pub fn intervals(sorted: &[u128]) -> Vec<RangeInclusive<u128>> {
 
 impl SetSpec {
     pub fn empty() -> SetSpec {
-        SetSpec { pieces: Vec::new(), finish: Finish::Nothing }
+        SetSpec {
+            pieces: Vec::new(),
+            finish: Finish::Nothing,
+        }
     }
 
     /// Builds the bitmap and its model. Return values of `insert`, `insert_range`, `append` and
@@ -649,7 +680,11 @@ pub fn add_values(rb: &mut RoaringBitmap128, model: &mut Model, values: Vec<u128
             s.dedup();
             for r in intervals(&s) {
                 let new = r.clone().filter(|v| !model.contains(v)).count() as u64;
-                assert_eq!(rb.insert_range(r.clone()), new, "insert_range({r:#x?}) return value");
+                assert_eq!(
+                    rb.insert_range(r.clone()),
+                    new,
+                    "insert_range({r:#x?}) return value"
+                );
                 model.extend(r);
             }
         }
@@ -679,7 +714,11 @@ pub fn add_values(rb: &mut RoaringBitmap128, model: &mut Model, values: Vec<u128
                 let res = rb.try_push(v);
                 assert_eq!(res.is_ok(), ok, "try_push({v:#x}) result");
                 if !ok {
-                    assert_eq!(rb.insert(v), !model.contains(&v), "insert({v:#x}) return value");
+                    assert_eq!(
+                        rb.insert(v),
+                        !model.contains(&v),
+                        "insert({v:#x}) return value"
+                    );
                 }
                 model.insert(v);
             }
@@ -763,15 +802,18 @@ pub fn set_spec() -> impl Strategy<Value = SetSpec> + Clone {
 /// Two sets that share some pieces (added with possibly different build modes, hence possibly
 /// different container representations), so that set operations see overlapping containers.
 pub fn spec_pair() -> impl Strategy<Value = (SetSpec, SetSpec)> {
-    (set_spec_with(4), set_spec_with(4), vec((piece(), build_mode(), build_mode()), 0..=2)).prop_map(
-        |(mut a, mut b, shared)| {
+    (
+        set_spec_with(4),
+        set_spec_with(4),
+        vec((piece(), build_mode(), build_mode()), 0..=2),
+    )
+        .prop_map(|(mut a, mut b, shared)| {
             for (p, ba, bb) in shared {
                 a.pieces.push((p.clone(), ba));
                 b.pieces.push((p, bb));
             }
             (a, b)
-        },
-    )
+        })
 }
 
 /// Three sets sharing some pieces.
@@ -780,7 +822,10 @@ pub fn spec_triple() -> impl Strategy<Value = (SetSpec, SetSpec, SetSpec)> {
         set_spec_with(3),
         set_spec_with(3),
         set_spec_with(3),
-        vec((piece(), build_mode(), build_mode(), build_mode(), 0..7u8), 0..=3),
+        vec(
+            (piece(), build_mode(), build_mode(), build_mode(), 0..7u8),
+            0..=3,
+        ),
     )
         .prop_map(|(mut a, mut b, mut c, shared)| {
             for (p, ba, bb, bc, mask) in shared {
@@ -802,8 +847,11 @@ pub fn spec_triple() -> impl Strategy<Value = (SetSpec, SetSpec, SetSpec)> {
 
 /// `n` sets sharing some pieces.
 pub fn spec_list(max: usize) -> impl Strategy<Value = Vec<SetSpec>> {
-    (vec(set_spec_with(3), 0..=max), vec((piece(), build_mode(), any::<u8>()), 0..=3)).prop_map(
-        |(mut specs, shared)| {
+    (
+        vec(set_spec_with(3), 0..=max),
+        vec((piece(), build_mode(), any::<u8>()), 0..=3),
+    )
+        .prop_map(|(mut specs, shared)| {
             let n = specs.len();
             if n > 0 {
                 for (p, b, mask) in shared {
@@ -815,8 +863,7 @@ pub fn spec_list(max: usize) -> impl Strategy<Value = Vec<SetSpec>> {
                 }
             }
             specs
-        },
-    )
+        })
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -844,8 +891,14 @@ pub enum Form {
     AssignOwned,
 }
 
-pub const FORMS: [Form; 6] =
-    [Form::RefRef, Form::RefOwned, Form::OwnedRef, Form::OwnedOwned, Form::AssignRef, Form::AssignOwned];
+pub const FORMS: [Form; 6] = [
+    Form::RefRef,
+    Form::RefOwned,
+    Form::OwnedRef,
+    Form::OwnedOwned,
+    Form::AssignRef,
+    Form::AssignOwned,
+];
 
 pub fn set_op() -> impl Strategy<Value = SetOp> + Clone {
     prop::sample::select(SET_OPS.to_vec())
@@ -856,7 +909,12 @@ pub fn form() -> impl Strategy<Value = Form> + Clone {
 }
 
 /// `a op b` computed with the given form.
-pub fn apply_op(op: SetOp, form: Form, a: &RoaringBitmap128, b: &RoaringBitmap128) -> RoaringBitmap128 {
+pub fn apply_op(
+    op: SetOp,
+    form: Form,
+    a: &RoaringBitmap128,
+    b: &RoaringBitmap128,
+) -> RoaringBitmap128 {
     let (a_, b_) = (a.clone(), b.clone());
     match (op, form) {
         (SetOp::Or, Form::RefRef) => a | b,
@@ -1110,14 +1168,22 @@ fn elem(all: &[u128], i: &Index, d: i8) -> u128 {
 #[track_caller]
 pub fn check_iter_ops<I: RoaringIter>(mut it: I, expected: &[u128], all: &[u128], ops: &[IterOp]) {
     let mut m = ModelIter::new(expected);
-    assert_eq!(it.size_hint(), (m.len(), Some(m.len())), "initial size_hint");
+    assert_eq!(
+        it.size_hint(),
+        (m.len(), Some(m.len())),
+        "initial size_hint"
+    );
     for (step, op) in ops.iter().enumerate() {
         match op {
             IterOp::Next => assert_eq!(it.next(), m.next(), "step {step}: next"),
             IterOp::NextBack => assert_eq!(it.next_back(), m.next_back(), "step {step}: next_back"),
             IterOp::Nth(n) => assert_eq!(it.nth(*n), m.nth(*n), "step {step}: nth({n})"),
             IterOp::NthBack(n) => {
-                assert_eq!(it.nth_back(*n), m.nth_back(*n), "step {step}: nth_back({n})")
+                assert_eq!(
+                    it.nth_back(*n),
+                    m.nth_back(*n),
+                    "step {step}: nth_back({n})"
+                )
             }
             IterOp::AdvanceTo(n) => {
                 it.advance_to_(*n);
@@ -1141,7 +1207,11 @@ pub fn check_iter_ops<I: RoaringIter>(mut it: I, expected: &[u128], all: &[u128]
                 assert_eq!(it.next_range_(), m.next_range(), "step {step}: next_range")
             }
             IterOp::NextRangeBack => {
-                assert_eq!(it.next_range_back_(), m.next_range_back(), "step {step}: next_range_back")
+                assert_eq!(
+                    it.next_range_back_(),
+                    m.next_range_back(),
+                    "step {step}: next_range_back"
+                )
             }
             IterOp::CloneCheck => {
                 let c = it.clone();
@@ -1149,11 +1219,19 @@ pub fn check_iter_ops<I: RoaringIter>(mut it: I, expected: &[u128], all: &[u128]
                 assert_same_seq(c, m.rest.iter().copied(), "clone yields the rest");
             }
         }
-        assert_eq!(it.size_hint(), (m.len(), Some(m.len())), "step {step} ({op:?}): size_hint");
+        assert_eq!(
+            it.size_hint(),
+            (m.len(), Some(m.len())),
+            "step {step} ({op:?}): size_hint"
+        );
         assert_eq!(it.len(), m.len(), "step {step} ({op:?}): len");
     }
     let rest = m.rest;
-    assert_same_seq(it.clone().rev(), rest.iter().rev().copied(), "rest (reversed)");
+    assert_same_seq(
+        it.clone().rev(),
+        rest.iter().rev().copied(),
+        "rest (reversed)",
+    );
     assert_eq!(it.clone().count(), rest.len(), "count of the rest");
     assert_same_seq(it.by_ref(), rest.iter().copied(), "rest");
     assert_eq!(it.next(), None, "fused next");
@@ -1174,7 +1252,11 @@ where
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res = if self.0 { self.1.next() } else { self.1.next_back() };
+        let res = if self.0 {
+            self.1.next()
+        } else {
+            self.1.next_back()
+        };
         self.0 = !self.0;
         res
     }
@@ -1196,8 +1278,13 @@ where
 #[track_caller]
 pub fn serialize(rb: &RoaringBitmap128) -> Vec<u8> {
     let mut buf = Vec::new();
-    rb.serialize_into(&mut buf).expect("serialize_into a Vec cannot fail");
-    assert_eq!(buf.len(), rb.serialized_size(), "serialized_size() == bytes written");
+    rb.serialize_into(&mut buf)
+        .expect("serialize_into a Vec cannot fail");
+    assert_eq!(
+        buf.len(),
+        rb.serialized_size(),
+        "serialized_size() == bytes written"
+    );
     buf
 }
 
@@ -1211,6 +1298,9 @@ pub fn round_trip(rb: &RoaringBitmap128) -> RoaringBitmap128 {
     let unchecked =
         RoaringBitmap128::deserialize_unchecked_from(&buf[..]).expect("deserialize_unchecked_from");
     assert_valid(&unchecked);
-    assert_eq!(&unchecked, rb, "deserialize_unchecked_from(serialize_into(x)) == x");
+    assert_eq!(
+        &unchecked, rb,
+        "deserialize_unchecked_from(serialize_into(x)) == x"
+    );
     back
 }

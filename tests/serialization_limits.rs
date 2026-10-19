@@ -113,8 +113,9 @@ fn check_rejected_cheaply(bytes: &[u8], what: &str) {
     }
 }
 
+/// Container counts larger than what the inputs below contain (at most 3 containers).
 const COUNTS: [u64; 12] = [
-    2,
+    4,
     1000,
     1 << 16,
     1 << 20,
@@ -134,7 +135,10 @@ fn deserialize_huge_container_count() {
     for count in COUNTS {
         for flags in [0, 1] {
             let bytes = header(count, flags);
-            check_rejected_cheaply(&bytes, &format!("header only, count {count}, flags {flags}"));
+            check_rejected_cheaply(
+                &bytes,
+                &format!("header only, count {count}, flags {flags}"),
+            );
             // a few valid-looking descriptors and payloads after the header
             let mut bytes = header(count, flags);
             if flags == 1 {
@@ -144,7 +148,10 @@ fn deserialize_huge_container_count() {
                 bytes.extend((k << 16).to_le_bytes());
             }
             bytes.extend([0u8; 6]);
-            check_rejected_cheaply(&bytes, &format!("3 containers, count {count}, flags {flags}"));
+            check_rejected_cheaply(
+                &bytes,
+                &format!("3 containers, count {count}, flags {flags}"),
+            );
         }
     }
 }
@@ -163,7 +170,10 @@ fn deserialize_huge_count_after_valid_content() {
         for count in COUNTS.into_iter().filter(|&c| c > n) {
             let mut bytes = valid.clone();
             bytes[8..16].copy_from_slice(&count.to_le_bytes());
-            check_rejected_cheaply(&bytes, &format!("valid content, count {count} instead of {n}"));
+            check_rejected_cheaply(
+                &bytes,
+                &format!("valid content, count {count} instead of {n}"),
+            );
         }
     }
 }
@@ -172,8 +182,9 @@ fn deserialize_huge_count_after_valid_content() {
 #[test]
 fn valid_input_allocations_are_proportional() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let mut rb: RoaringBitmap128 =
-        (0..50_000u128).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)).collect();
+    let mut rb: RoaringBitmap128 = (0..50_000u128)
+        .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835))
+        .collect();
     rb.insert_range(1 << 64..(1 << 64) + 300_000);
     rb.extend((0..10_000u128).map(|i| (1 << 100) + 3 * i));
     let bytes = serialize(&rb);
@@ -181,8 +192,16 @@ fn valid_input_allocations_are_proportional() {
     let back = res.unwrap();
     assert_eq!(back, rb);
     let bound = 8 * bytes.len() + SLACK;
-    assert!(largest <= bound, "largest allocation {largest} for {} bytes", bytes.len());
-    assert!(peak <= bound, "peak heap growth {peak} for {} bytes", bytes.len());
+    assert!(
+        largest <= bound,
+        "largest allocation {largest} for {} bytes",
+        bytes.len()
+    );
+    assert!(
+        peak <= bound,
+        "peak heap growth {peak} for {} bytes",
+        bytes.len()
+    );
 }
 
 proptest! {

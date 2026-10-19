@@ -30,7 +30,10 @@ fn insert_range_body(off: u128, lo: u32, hi: u32, checks: &[u32]) {
         let i = off + i as u128;
         let bitmap_has = b.contains(i);
         let range_has = r.contains(&i);
-        assert_eq!(bitmap_has, range_has, "value {i} in bitmap={bitmap_has} and range={range_has}");
+        assert_eq!(
+            bitmap_has, range_has,
+            "value {i} in bitmap={bitmap_has} and range={range_has}"
+        );
     }
 }
 
@@ -332,17 +335,31 @@ fn remove_smallest_biggest_huge_n_u128() {
 
 #[test]
 fn remove_smallest_biggest_across_far_keys_u128() {
-    let values = [0u128, 5, 1 << 64, (1 << 64) + 1, 1 << 112, u128::MAX - 1, u128::MAX];
+    let values = [
+        0u128,
+        5,
+        1 << 64,
+        (1 << 64) + 1,
+        1 << 112,
+        u128::MAX - 1,
+        u128::MAX,
+    ];
     for n in 0..=values.len() as u64 + 1 {
         let mut a: RoaringBitmap128 = values.into_iter().collect();
         a.remove_smallest(n);
         assert_valid(&a);
-        assert!(a.iter().eq(values.iter().copied().skip(n as usize)), "remove_smallest({n})");
+        assert!(
+            a.iter().eq(values.iter().copied().skip(n as usize)),
+            "remove_smallest({n})"
+        );
         let mut b: RoaringBitmap128 = values.into_iter().collect();
         b.remove_biggest(n);
         assert_valid(&b);
         let keep = values.len().saturating_sub(n as usize);
-        assert!(b.iter().eq(values.iter().copied().take(keep)), "remove_biggest({n})");
+        assert!(
+            b.iter().eq(values.iter().copied().take(keep)),
+            "remove_biggest({n})"
+        );
     }
 }
 

@@ -29,18 +29,39 @@ fn array_bitmap_boundary(off: u128) {
     let off = off & !0xFFFF;
     let mut bitmap: RoaringBitmap128 = (0..4096).map(|v| off + 2 * v).collect();
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (1, 0, 0));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (1, 0, 0)
+    );
     assert_eq!(s.n_values_array_containers, 4096);
 
     bitmap.insert(off + 2 * 4096);
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (0, 1, 0));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (0, 1, 0)
+    );
     assert_eq!(s.n_values_bitset_containers, 4097);
     assert!(s.n_bytes_bitset_containers >= 8192);
 
     bitmap.remove(off);
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (1, 0, 0));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (1, 0, 0)
+    );
     assert_eq!(s.cardinality, 4096);
     assert_valid(&bitmap);
 }
@@ -51,23 +72,51 @@ fn runs(off: u128) {
     let mut bitmap = RoaringBitmap128::new();
     bitmap.insert_range(off + 10..off + 1000);
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (0, 0, 1));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (0, 0, 1)
+    );
     assert_eq!(s.n_values_run_containers, 990);
 
     assert!(bitmap.remove_run_compression());
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (1, 0, 0));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (1, 0, 0)
+    );
     assert_eq!(s.n_values_array_containers, 990);
 
     assert!(bitmap.optimize());
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (0, 0, 1));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (0, 0, 1)
+    );
 
     // a big dense container becomes a bitmap without runs
     bitmap.insert_range(off + 0x1_0000..off + 0x1_8000);
     assert!(bitmap.remove_run_compression());
     let s = bitmap.statistics();
-    assert_eq!((s.n_array_containers, s.n_bitset_containers, s.n_run_containers), (1, 1, 0));
+    assert_eq!(
+        (
+            s.n_array_containers,
+            s.n_bitset_containers,
+            s.n_run_containers
+        ),
+        (1, 1, 0)
+    );
     assert_eq!(s.n_values_bitset_containers, 0x8000);
     assert_eq!(s.n_containers, 2);
     assert_eq!(s.cardinality, 990 + 0x8000);
@@ -79,17 +128,24 @@ offset_variants!(doc_example, array_bitmap_boundary, runs);
 fn empty_statistics() {
     let s = RoaringBitmap128::new().statistics();
     assert_eq!(s.n_containers, 0);
-    assert_eq!(s.n_array_containers + s.n_bitset_containers + s.n_run_containers, 0);
+    assert_eq!(
+        s.n_array_containers + s.n_bitset_containers + s.n_run_containers,
+        0
+    );
     assert_eq!(s.cardinality, 0);
     assert_eq!(s.max_value, None);
     assert_eq!(s.min_value, None);
-    assert_eq!(s.n_bytes_array_containers + s.n_bytes_bitset_containers + s.n_bytes_run_containers, 0);
+    assert_eq!(
+        s.n_bytes_array_containers + s.n_bytes_bitset_containers + s.n_bytes_run_containers,
+        0
+    );
 }
 
 #[test]
 fn sparse_uuids_one_container_each() {
-    let values: Vec<u128> =
-        (1..=1000u128).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)).collect();
+    let values: Vec<u128> = (1..=1000u128)
+        .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835))
+        .collect();
     let bitmap: RoaringBitmap128 = values.iter().copied().collect();
     let s = bitmap.statistics();
     assert_eq!(s.n_containers, 1000);

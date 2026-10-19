@@ -80,11 +80,17 @@ fn into_iter_basic(off: u128) {
     let mut i = bm.into_iter();
     i.advance_to(off + 10);
     let mut expected_size_hint = 4;
-    assert_eq!(i.size_hint(), (expected_size_hint, Some(expected_size_hint)));
+    assert_eq!(
+        i.size_hint(),
+        (expected_size_hint, Some(expected_size_hint))
+    );
     for n in 11..=14 {
         assert_eq!(i.next(), Some(off + n));
         expected_size_hint -= 1;
-        assert_eq!(i.size_hint(), (expected_size_hint, Some(expected_size_hint)));
+        assert_eq!(
+            i.size_hint(),
+            (expected_size_hint, Some(expected_size_hint))
+        );
     }
     assert_eq!(i.next(), None);
 }

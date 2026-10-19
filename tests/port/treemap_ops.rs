@@ -27,7 +27,10 @@ fn ops_across_buckets(off: u128) {
     assert_eq!(&rb1 | &rb2, shifted(off, lo..lo + 6));
     assert_eq!(&rb1 & &rb2, shifted(off, lo + 2..lo + 4));
     assert_eq!(&rb1 - &rb2, shifted(off, lo..lo + 2));
-    assert_eq!(&rb1 ^ &rb2, shifted(off, (lo..lo + 2).chain(lo + 4..lo + 6)));
+    assert_eq!(
+        &rb1 ^ &rb2,
+        shifted(off, (lo..lo + 2).chain(lo + 4..lo + 6))
+    );
     assert_eq!(rb1.union_len(&rb2), 6);
     assert_eq!(rb1.intersection_len(&rb2), 2);
     assert_eq!(rb1.difference_len(&rb2), 2);
