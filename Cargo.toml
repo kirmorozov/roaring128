@@ -1,0 +1,43 @@
+[package]
+name = "roaring128"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+authors = ["Kirill Morozov <kir.morozov@gmail.com>"]
+description = "Native 128-bit Roaring bitmaps (u128 / UUID sets) with AVX-512, AVX2 and NEON acceleration"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["roaring", "bitmap", "u128", "uuid", "simd"]
+categories = ["data-structures", "compression"]
+
+[features]
+default = ["std"]
+# Runtime CPU feature detection, `std::io` based serialization and `std::error::Error` impls.
+std = []
+serde = ["dep:serde", "std"]
+# Conversions between `uuid::Uuid` and the `u128` values stored in the bitmap.
+uuid = ["dep:uuid"]
+
+[dependencies]
+serde = { version = "1.0.228", optional = true, default-features = false }
+uuid = { version = "1.18", optional = true, default-features = false }
+
+[dev-dependencies]
+proptest = "1.7"
+roaring = "0.11"
+serde_json = "1.0"
+postcard = { version = "1.1", features = ["alloc"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "ops"
+harness = false
+
+[profile.bench]
+debug = true
+
+[profile.test]
+opt-level = 1
+
+[package.metadata.docs.rs]
+all-features = true
