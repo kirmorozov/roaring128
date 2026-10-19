@@ -177,14 +177,33 @@ pub(crate) fn random_set(rng: &mut Rng, n: usize) -> Model {
 
 /// A cardinality drawn from the interesting classes (inline, heap array, boundary, bitmap).
 pub(crate) fn random_len(rng: &mut Rng) -> usize {
+    if cfg!(miri) {
+        // Every O(n) pass over the models is very slow under Miri: mostly tiny sets, the
+        // array/bitmap boundary now and then.
+        return match rng.below(16) {
+            0 => 4090 + rng.below(12) as usize,
+            1..=4 => rng.below(INLINE_CAPACITY as u64 + 2) as usize,
+            _ => rng.below(40) as usize,
+        };
+    }
     match rng.below(8) {
         0 => rng.below(INLINE_CAPACITY as u64 + 2) as usize,
         1 => 8 + rng.below(56) as usize,
         2 => 64 + rng.below(4033) as usize,
         3 => 4090 + rng.below(12) as usize,
-        4 if !cfg!(miri) => 4097 + rng.below(60000) as usize,
-        5 if !cfg!(miri) => 65530 + rng.below(7) as usize,
+        4 => 4097 + rng.below(60000) as usize,
+        5 => 65530 + rng.below(7) as usize,
         _ => rng.below(30) as usize,
+    }
+}
+
+/// A random set for store-level tests (any cardinality natively, small under Miri).
+pub(crate) fn store_model(rng: &mut Rng) -> Model {
+    if cfg!(miri) {
+        let n = rng.below(200) as usize;
+        random_set(rng, n)
+    } else {
+        random_model(rng)
     }
 }
 
@@ -481,6 +500,10 @@ fn run_point_ops() {
 
 /// Conversions at exactly `ARRAY_LIMIT`.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "needs > 4096 values: too slow under Miri, no unsafe code beyond the other tests"
+)]
 fn array_bitmap_boundary() {
     let mut model: Model = (0..ARRAY_LIMIT as u16 * 2).step_by(2).collect();
     let mut c = Container::from_sorted_unchecked(&model.iter().copied().collect::<Vec<_>>());
@@ -737,6 +760,10 @@ fn run_set_ops() {
 /// Unions and symmetric differences of arrays whose total size exceeds the limit go through a
 /// bitmap and come back as arrays when small.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "needs > 4096 values: too slow under Miri, no unsafe code beyond the other tests"
+)]
 fn array_ops_through_bitmap() {
     let a: Model = (0..3000).collect();
     let b: Model = (1000..4000).collect();
@@ -1215,6 +1242,10 @@ fn optimize_keeping_the_representation_matches_roaring() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "needs > 4096 values: too slow under Miri, no unsafe code beyond the other tests"
+)]
 fn is_full_by_representation() {
     let all: Vec<u16> = (0..=u16::MAX).collect();
     let full = Container::from_sorted_unchecked(&all);
@@ -1226,6 +1257,10 @@ fn is_full_by_representation() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "needs > 4096 values: too slow under Miri, no unsafe code beyond the other tests"
+)]
 fn ensure_correct_store_converts() {
     let values: Vec<u16> = (0..5000).map(|v| v * 13).collect();
     let mut model: Model = values.iter().copied().collect();

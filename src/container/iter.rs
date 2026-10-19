@@ -1179,7 +1179,7 @@ pub(crate) mod tests {
     use core::ops::RangeInclusive;
 
     use super::*;
-    use crate::container::tests::{Model, Rng, cases, intervals_of, random_model};
+    use crate::container::tests::{Model, Rng, cases, intervals_of, store_model};
 
     /// The container iterator API, so that both iterators can be tested generically.
     pub(crate) trait Walk:
@@ -1437,11 +1437,13 @@ pub(crate) mod tests {
         let mut rng = Rng::new(seed);
         let mut sets = special_sets();
         if cfg!(miri) {
-            // The full-container shapes are too slow to walk under Miri.
-            sets.retain(|s| s.len() < 1100);
+            // Large sets are too slow to walk under Miri; a sparse set still crosses many
+            // words.
+            sets.retain(|s| s.len() <= 130);
+            sets.push((0..20000).step_by(63).collect());
         }
         for _ in 0..cases(150) {
-            sets.push(values_of(&random_model(&mut rng)));
+            sets.push(values_of(&store_model(&mut rng)));
         }
         sets
     }

@@ -549,7 +549,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::container::tests::{Model, Rng, cases, random_model, random_set};
+    use crate::container::tests::{Model, Rng, cases, random_set, store_model};
 
     #[track_caller]
     fn check(a: &ArrayStore, model: &Model) {
@@ -667,11 +667,11 @@ mod tests {
     fn set_operations_against_model() {
         let mut rng = Rng::new(0xA002);
         for _ in 0..cases(300) {
-            let ma = random_model(&mut rng);
+            let ma = store_model(&mut rng);
             let mb = if rng.chance(30) {
                 ma.iter().copied().filter(|_| rng.chance(50)).collect()
             } else {
-                random_model(&mut rng)
+                store_model(&mut rng)
             };
             if ma.len() > 4096 || mb.len() > 4096 {
                 continue;

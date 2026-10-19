@@ -665,7 +665,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::container::tests::{Model, Rng, cases, random_model, runs_of};
+    use crate::container::tests::{Model, Rng, cases, runs_of, store_model};
 
     fn values(b: &BitmapStore) -> Vec<u16> {
         let mut out = Vec::new();
@@ -710,7 +710,7 @@ mod tests {
     fn operations_against_model() {
         let mut rng = Rng::new(0xB002);
         for _ in 0..cases(200) {
-            let mut model = random_model(&mut rng);
+            let mut model = store_model(&mut rng);
             let mut b = bitmap_of(&model);
             check(&b, &model);
             for _ in 0..cases(40) {
@@ -798,8 +798,8 @@ mod tests {
         let mut rng = Rng::new(0xB003);
         // About 25 whole-bitmap operations per case: a single case under Miri.
         for _ in 0..if cfg!(miri) { 1 } else { 200 } {
-            let ma = random_model(&mut rng);
-            let mb = random_model(&mut rng);
+            let ma = store_model(&mut rng);
+            let mb = store_model(&mut rng);
             let (a, b) = (bitmap_of(&ma), bitmap_of(&mb));
             let vb: Vec<u16> = mb.iter().copied().collect();
 
@@ -880,7 +880,12 @@ mod tests {
         let mut rng = Rng::new(0xB004);
         for _ in 0..cases(100) {
             let offset = rng.below(BITMAP_BYTES as u64) as usize;
-            let len = rng.below((BITMAP_BYTES - offset) as u64 + 1) as usize;
+            let max_len = if cfg!(miri) {
+                64
+            } else {
+                BITMAP_BYTES - offset
+            };
+            let len = rng.below(max_len.min(BITMAP_BYTES - offset) as u64 + 1) as usize;
             let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
             let mut model = Model::new();
             for (i, &byte) in bytes.iter().enumerate() {
