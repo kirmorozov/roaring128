@@ -254,7 +254,11 @@ kernels! {
         let mut wi = 0;
         while wi < BITMAP_WORDS {
             let block = &a[wi..wi + DECODE_BLOCK];
-            let card: u32 = block.iter().map(|w| w.count_ones()).sum();
+            // Density estimated from four of the sixteen words (see the AVX2 decoder).
+            let card = 4 * (block[0].count_ones()
+                + block[5].count_ones()
+                + block[10].count_ones()
+                + block[15].count_ones());
             if card <= SPARSE_BLOCK {
                 // At most one bit per word on average: one `tzcnt` per value.
                 for (t, &w) in block.iter().enumerate() {
