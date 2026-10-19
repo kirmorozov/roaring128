@@ -201,23 +201,40 @@ unsafe fn any_block(a: &Words, b: &Words, test: impl Fn(__m256i, __m256i) -> __m
 
 /// Words per density decision of `bitmap_to_array`.
 const DECODE_BLOCK: usize = 16;
-/// Blocks with at most this many bits (4 per word) are decoded one bit at a time.
-const SPARSE_BLOCK: u32 = 4 * DECODE_BLOCK as u32;
-/// Blocks with at most this many bits (8 per word) use the unrolled `tzcnt` decoder; denser
+/// Blocks with at most this many bits (5.5 per word) are decoded one bit at a time: below that
+/// density the plain loop is as fast as any vector decoder.
+const SPARSE_BLOCK: u32 = 88;
+/// Blocks with at most this many bits (7 per word) use the unrolled `tzcnt` decoder; denser
 /// blocks use the byte table.
-const MEDIUM_BLOCK: u32 = 8 * DECODE_BLOCK as u32;
+const MEDIUM_BLOCK: u32 = 7 * DECODE_BLOCK as u32;
+
+/// Four set bit indices of `x` (lowest first, 64 when exhausted) plus `base` in each 16-bit
+/// lane of the result; clears them from `x`.
+#[inline(always)]
+unsafe fn four_indices(x: &mut u64, base: u64) -> u64 {
+    unsafe {
+        let mut packed = 0;
+        for lane in 0..4 {
+            packed |= _tzcnt_u64(*x) << (16 * lane);
+            *x = _blsr_u64(*x);
+        }
+        // A lane only carries into the next one when it is exhausted (64 + 65472 in the last
+        // word), and then all the lanes above it are exhausted scratch as well.
+        packed.wrapping_add(base * 0x0001_0001_0001_0001)
+    }
+}
 
 /// Writes the set bit indices of `w` plus `base` to `dst`: eight values with a fixed unrolled
-/// sequence (values past the popcount are scratch), then a loop for the rest. Writes
-/// `max(8, popcount)` lanes.
+/// sequence and two 64-bit stores (values past the popcount are scratch), then a loop for the
+/// rest. Writes `max(8, popcount)` lanes.
 #[inline(always)]
 unsafe fn decode_word_unrolled(w: u64, base: u32, dst: *mut u16) {
     unsafe {
         let mut x = w;
-        for k in 0..8 {
-            *dst.add(k) = (base + _tzcnt_u64(x) as u32) as u16;
-            x = _blsr_u64(x);
-        }
+        let lo = four_indices(&mut x, base as u64);
+        let hi = four_indices(&mut x, base as u64);
+        dst.cast::<u64>().write_unaligned(lo);
+        dst.add(4).cast::<u64>().write_unaligned(hi);
         let mut k = 8;
         while x != 0 {
             *dst.add(k) = (base + _tzcnt_u64(x) as u32) as u16;
