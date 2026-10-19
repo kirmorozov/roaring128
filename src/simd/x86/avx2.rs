@@ -170,8 +170,15 @@ unsafe fn op_card<const OP: u8>(a: &Words, b: &Words) -> u32 {
 unsafe fn op_nocard<const OP: u8>(a: &mut Words, b: &Words) {
     let (pa, pb) = (a.as_mut_ptr(), b.as_ptr());
     unsafe {
-        for i in 0..VECTORS {
-            store(pa, i, op256::<OP>(load(pa, i), load(pb, i)));
+        // Four loads before four stores: the loads never wait behind a store.
+        for i in (0..VECTORS).step_by(4) {
+            let v: [_; 4] = core::array::from_fn(
+                #[inline(always)]
+                |u| op256::<OP>(load(pa, i + u), load(pb, i + u)),
+            );
+            for (u, v) in v.into_iter().enumerate() {
+                store(pa, i + u, v);
+            }
         }
     }
 }
@@ -341,11 +348,17 @@ kernels! {
         let dst = out.as_mut_ptr().cast::<u16>();
         let mut written = 0usize;
         let mut wi = 0;
-        // The decoder is chosen per block of words from the block's density, which keeps the
-        // choice predictable for the branch predictor.
+        // The decoder is chosen per block of words from the block's density, estimated from
+        // four of its sixteen words: cheap next to the sparse loop, resolved early by the
+        // branch predictor and stable on uniform data. (Using the previous block's exact
+        // output count instead makes a mispredicted choice resolve only after the previous
+        // block is done, which costs far more.)
         'blocks: while wi < BITMAP_WORDS {
             let block = &a[wi..wi + DECODE_BLOCK];
-            let card: u32 = block.iter().map(|w| w.count_ones()).sum();
+            let card = 4 * (block[0].count_ones()
+                + block[5].count_ones()
+                + block[10].count_ones()
+                + block[15].count_ones());
             if card <= SPARSE_BLOCK {
                 // Few bits per word: one `tzcnt` per value, exact stores.
                 for (t, &w) in block.iter().enumerate() {

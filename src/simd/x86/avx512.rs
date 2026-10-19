@@ -109,8 +109,15 @@ unsafe fn op_card<const OP: u8>(a: &Words, b: &Words) -> u32 {
 unsafe fn op_nocard<const OP: u8>(a: &mut Words, b: &Words) {
     let (pa, pb) = (a.as_mut_ptr(), b.as_ptr());
     unsafe {
-        for i in 0..VECTORS {
-            store(pa, i, op512::<OP>(load(pa, i), load(pb, i)));
+        // Four loads before four stores: the loads never wait behind a store.
+        for i in (0..VECTORS).step_by(4) {
+            let v: [_; 4] = core::array::from_fn(
+                #[inline(always)]
+                |u| op512::<OP>(load(pa, i + u), load(pb, i + u)),
+            );
+            for (u, v) in v.into_iter().enumerate() {
+                store(pa, i + u, v);
+            }
         }
     }
 }
