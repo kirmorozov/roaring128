@@ -39,15 +39,23 @@ pub const MAX_KEY: u128 = u128::MAX >> 16;
 /// proptest configuration with `default_cases` cases (at most 256), overridable with the
 /// `PROPTEST_CASES` environment variable. Failure persistence is disabled so that runs do not
 /// create `proptest-regressions` files; failing inputs are printed by proptest.
+///
+/// Shrinking is bounded (2048 iterations / 20 s, overridable with `PROPTEST_MAX_SHRINK_ITERS`
+/// and `PROPTEST_MAX_SHRINK_TIME`): shrinking collections of 100k values one element at a time
+/// would otherwise take minutes.
 pub fn config(default_cases: u32) -> ProptestConfig {
+    let base = ProptestConfig::default();
     let cases = std::env::var("PROPTEST_CASES")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(default_cases.min(256));
+    let env_set = |name: &str| std::env::var_os(name).is_some();
     ProptestConfig {
         cases,
         failure_persistence: None,
-        ..ProptestConfig::default()
+        max_shrink_iters: if env_set("PROPTEST_MAX_SHRINK_ITERS") { base.max_shrink_iters } else { 2048 },
+        max_shrink_time: if env_set("PROPTEST_MAX_SHRINK_TIME") { base.max_shrink_time } else { 20_000 },
+        ..base
     }
 }
 
