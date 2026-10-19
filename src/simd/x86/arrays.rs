@@ -28,7 +28,7 @@ use core::arch::x86_64::*;
 use core::mem::MaybeUninit;
 
 use crate::simd::check_out;
-use crate::simd::scalar::{copy_tail, gallop};
+use crate::simd::scalar::{self, copy_tail, gallop};
 
 // Size ratios from which searching the values of the smaller input in the larger one beats the
 // vector merges (which touch every element of both inputs). Measured on Zen 3 with 4096 values
@@ -43,6 +43,12 @@ const SEARCH_RATIO_MERGE: usize = 14;
 const SEARCH_RATIO_DIFF_SMALL_A: usize = 14;
 /// Difference with a small subtrahend (the runs between the found positions are copied).
 const SEARCH_RATIO_DIFF_SMALL_B: usize = 24;
+
+/// Inputs with at most this many values in total are intersected (or subtracted) by the scalar
+/// branch-free merge: below it, setting up the blocks costs more than the whole merge.
+const TINY_TOTAL: usize = 15;
+/// The same for union and symmetric difference, whose vector merge has a longer setup and tail.
+const TINY_TOTAL_MERGE: usize = 32;
 
 /// Lane primitives on vectors of eight `u16`.
 pub(crate) trait Lanes {
@@ -78,6 +84,21 @@ pub(crate) trait Lanes {
                 copy_lt8(tmp.as_ptr(), dst, n);
             }
         }
+    }
+}
+
+/// Copies `src` to `out[k..]`, returns the new length. Short runs are copied inline: the
+/// tails call this once per value of the smaller input, often for empty or tiny runs.
+#[inline(always)]
+fn copy_run(src: &[u16], out: &mut [MaybeUninit<u16>], k: usize) -> usize {
+    let n = src.len();
+    if n < 8 {
+        let dst = &mut out[k..k + n];
+        // SAFETY: `dst` holds `n < 8` values.
+        unsafe { copy_lt8(src.as_ptr(), dst.as_mut_ptr().cast(), n) };
+        k + n
+    } else {
+        copy_tail(src, out, k)
     }
 }
 
@@ -296,12 +317,12 @@ pub(super) fn difference_search_large(a: &[u16], b: &[u16], out: &mut [MaybeUnin
         a,
         #[inline(always)]
         |v, p| {
-            k = copy_tail(&a[i..p], out, k);
+            k = copy_run(&a[i..p], out, k);
             i = p + found_at(a, p, v) as usize;
             true
         },
     );
-    copy_tail(&a[i..], out, k)
+    copy_run(&a[i..], out, k)
 }
 
 /// Union (`XOR == false`) or symmetric difference (`XOR == true`) of a small set with a large
@@ -318,7 +339,7 @@ pub(super) fn merge_search<const XOR: bool>(
         large,
         #[inline(always)]
         |v, p| {
-            k = copy_tail(&large[j..p], out, k);
+            k = copy_run(&large[j..p], out, k);
             let found = found_at(large, p, v);
             j = p + found as usize;
             if !(XOR && found) {
@@ -328,7 +349,7 @@ pub(super) fn merge_search<const XOR: bool>(
             true
         },
     );
-    copy_tail(&large[j..], out, k)
+    copy_run(&large[j..], out, k)
 }
 
 /// Peels a leading zero value off both inputs (`pcmpistrm` treats zero lanes as terminators).
@@ -363,6 +384,9 @@ pub(crate) unsafe fn intersect<L: Lanes>(
     let (small, large) = by_len(a, b);
     if small.is_empty() {
         return 0;
+    }
+    if a.len() + b.len() <= TINY_TOTAL {
+        return scalar::array_intersect_merge(a, b, out, 0, 0, 0);
     }
     if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
         return intersect_search(small, large, out);
@@ -407,6 +431,9 @@ pub(crate) unsafe fn intersect_card<L: Lanes>(a: &[u16], b: &[u16]) -> usize {
     if small.is_empty() {
         return 0;
     }
+    if a.len() + b.len() <= TINY_TOTAL {
+        return scalar::array_intersect_card_merge(a, b, 0, 0, 0);
+    }
     if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
         let mut k = 0;
         search_each(
@@ -445,6 +472,9 @@ pub(crate) unsafe fn intersects<L: Lanes>(a: &[u16], b: &[u16]) -> bool {
     let (small, large) = by_len(a, b);
     if small.is_empty() {
         return false;
+    }
+    if a.len() + b.len() <= TINY_TOTAL {
+        return scalar::array_intersects_merge(a, b, 0, 0);
     }
     if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
         let mut any = false;
@@ -494,7 +524,10 @@ pub(crate) unsafe fn difference<L: Lanes>(
         return 0;
     }
     if b.is_empty() {
-        return copy_tail(a, out, 0);
+        return copy_run(a, out, 0);
+    }
+    if a.len() + b.len() <= TINY_TOTAL {
+        return scalar::array_difference_merge(a, b, out, 0, 0, 0);
     }
     if search_wins(a, b, SEARCH_RATIO_DIFF_SMALL_A) {
         return difference_search_small(a, b, out);
@@ -526,7 +559,7 @@ pub(crate) unsafe fn difference_blocks<L: Lanes>(
         return k;
     }
     if b.is_empty() {
-        return copy_tail(a, out, k);
+        return copy_run(a, out, k);
     }
     let (mut i, mut j) = (0, 0);
     // Lanes of the current block of `a` seen in `b` so far.
@@ -553,7 +586,7 @@ pub(crate) unsafe fn difference_blocks<L: Lanes>(
                     let va = load_block::<L>(a, i);
                     k = store_packed::<L>(va, block_lanes(a, i) & !found, out, k);
                     let rest = (i + 8).min(a.len());
-                    return copy_tail(&a[rest..], out, k);
+                    return copy_run(&a[rest..], out, k);
                 }
             }
         }
@@ -678,7 +711,7 @@ fn union_tail(
         if p > j {
             // `long[j..p]` < x; only its first value can repeat `last`.
             let skip = (long[j] == last) as usize;
-            k = copy_tail(&long[j + skip..p], out, k);
+            k = copy_run(&long[j + skip..p], out, k);
         }
         j = p;
         if j < long.len() && long[j] == x {
@@ -690,7 +723,7 @@ fn union_tail(
     }
     if j < long.len() {
         let skip = (long[j] == last) as usize;
-        k = copy_tail(&long[j + skip..], out, k);
+        k = copy_run(&long[j + skip..], out, k);
     }
     k
 }
@@ -717,7 +750,7 @@ fn xor_tail(
             i += 1;
         }
         let p = gallop(long, j, x);
-        k = copy_tail(&long[j..p], out, k);
+        k = copy_run(&long[j..p], out, k);
         j = p;
         if j < long.len() && long[j] == x {
             count += 1;
@@ -728,7 +761,7 @@ fn xor_tail(
             k += 1;
         }
     }
-    copy_tail(&long[j..], out, k)
+    copy_run(&long[j..], out, k)
 }
 
 /// Runs the block-wise merge of `a` and `b` (both at least eight long), calling `emit` with
@@ -796,6 +829,9 @@ unsafe fn pending<'a>(
 #[inline(always)]
 pub(crate) unsafe fn union<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len() + b.len());
+    if a.len() + b.len() <= TINY_TOTAL_MERGE {
+        return scalar::array_union_merge(a, b, out, 0, 0, 0);
+    }
     let (short, long) = by_len(a, b);
     if short.len() < 8 || search_wins(short, long, SEARCH_RATIO_MERGE) {
         return merge_search::<false>(short, long, out);
@@ -834,6 +870,9 @@ pub(crate) unsafe fn union_blocks<L: Lanes>(
 #[inline(always)]
 pub(crate) unsafe fn xor<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len() + b.len());
+    if a.len() + b.len() <= TINY_TOTAL_MERGE {
+        return scalar::array_xor_merge(a, b, out, 0, 0, 0);
+    }
     let (short, long) = by_len(a, b);
     if short.len() < 8 || search_wins(short, long, SEARCH_RATIO_MERGE) {
         return merge_search::<true>(short, long, out);
