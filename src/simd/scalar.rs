@@ -5,6 +5,10 @@
 //! selected as a backend on their own. They are `#[inline(always)]` so that backends can
 //! re-instantiate them inside `#[target_feature]` functions.
 
+// Real builds only reach the reference kernels through the Miri dispatch, the tests and the few
+// building blocks the vector backends reuse.
+#![cfg_attr(not(any(test, miri)), allow(dead_code))]
+
 use core::mem::MaybeUninit;
 
 use super::{BitOp, GALLOP_RATIO, Words, check_out};
@@ -16,7 +20,7 @@ use super::{BitOp, GALLOP_RATIO, Words, check_out};
 #[inline(always)]
 pub(crate) fn bitmap_popcount(a: &Words) -> u32 {
     let mut acc = [0u32; 4];
-    for chunk in a.chunks_exact(4) {
+    for chunk in a.as_chunks::<4>().0 {
         for (acc, &w) in acc.iter_mut().zip(chunk) {
             *acc += w.count_ones();
         }
@@ -29,9 +33,11 @@ fn op_into<const OP: u8>(a: &Words, b: &Words, out: &mut Words) -> u32 {
     let op = op_from_const::<OP>();
     let mut acc = [0u32; 4];
     for ((a, b), out) in a
-        .chunks_exact(4)
-        .zip(b.chunks_exact(4))
-        .zip(out.chunks_exact_mut(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .zip(out.as_chunks_mut::<4>().0)
     {
         for i in 0..4 {
             let w = op.apply(a[i], b[i]);
@@ -46,7 +52,12 @@ fn op_into<const OP: u8>(a: &Words, b: &Words, out: &mut Words) -> u32 {
 fn op_inplace<const OP: u8>(a: &mut Words, b: &Words) -> u32 {
     let op = op_from_const::<OP>();
     let mut acc = [0u32; 4];
-    for (a, b) in a.chunks_exact_mut(4).zip(b.chunks_exact(4)) {
+    for (a, b) in a
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(b.as_chunks::<4>().0)
+    {
         for i in 0..4 {
             let w = op.apply(a[i], b[i]);
             a[i] = w;
@@ -68,7 +79,7 @@ fn op_inplace_nocard<const OP: u8>(a: &mut Words, b: &Words) {
 fn op_card<const OP: u8>(a: &Words, b: &Words) -> u32 {
     let op = op_from_const::<OP>();
     let mut acc = [0u32; 4];
-    for (a, b) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (a, b) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         for i in 0..4 {
             acc[i] += op.apply(a[i], b[i]).count_ones();
         }
@@ -126,15 +137,19 @@ pub(crate) fn bitmap_op_card(op: BitOp, a: &Words, b: &Words) -> u32 {
 
 #[inline(always)]
 pub(crate) fn bitmap_intersects(a: &Words, b: &Words) -> bool {
-    a.chunks_exact(16)
-        .zip(b.chunks_exact(16))
+    a.as_chunks::<16>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<16>().0)
         .any(|(a, b)| a.iter().zip(b).fold(0, |acc, (a, b)| acc | (a & b)) != 0)
 }
 
 #[inline(always)]
 pub(crate) fn bitmap_is_subset(a: &Words, b: &Words) -> bool {
-    a.chunks_exact(16)
-        .zip(b.chunks_exact(16))
+    a.as_chunks::<16>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<16>().0)
         .all(|(a, b)| a.iter().zip(b).fold(0, |acc, (a, b)| acc | (a & !b)) == 0)
 }
 
