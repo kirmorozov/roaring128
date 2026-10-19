@@ -11,8 +11,12 @@
 //! * union and symmetric difference merge blocks of eight values with a bitonic merge network
 //!   (10 instructions deep instead of the 16 of the rotate-and-compare network) and remove
 //!   duplicates from the merged stream before packing it.
-//! * the tails are merged into the rest of the longer input with galloping searches and bulk
-//!   copies, and very skewed inputs use the same galloping paths from the start.
+//! * the merge tails are merged into the rest of the longer input with galloping searches and
+//!   bulk copies.
+//! * when one input is much smaller than the other (ratio 10 to 24 depending on the kernel),
+//!   its values are located in the larger input with branch-free binary searches, eight in
+//!   lockstep, and the runs in between are copied in bulk. This replaces CRoaring's galloping,
+//!   whose single chain of dependent, mispredicted branches is 3 to 4 times slower.
 //!
 //! Each backend provides the lane primitives through [`Lanes`]: AVX2 packs lanes with a `pshufb`
 //! lookup table, AVX-512 uses `vpcompressw` and masked loads and stores.
@@ -24,11 +28,21 @@ use core::arch::x86_64::*;
 use core::mem::MaybeUninit;
 
 use crate::simd::check_out;
-use crate::simd::scalar::{self, copy_tail, gallop};
+use crate::simd::scalar::{copy_tail, gallop};
 
-/// Inputs this many times smaller than the other side are processed by galloping through the
-/// larger one (the vector merges touch every element of both inputs).
-pub(crate) const SKEW_RATIO: usize = 32;
+// Size ratios from which searching the values of the smaller input in the larger one beats the
+// vector merges (which touch every element of both inputs). Measured on Zen 3 with 4096 values
+// on the large side: a search costs ~5.5 ns per value, a block merge ~0.6 ns per value of both
+// inputs.
+
+/// Intersection, intersection cardinality and `intersects`.
+const SEARCH_RATIO_INTERSECT: usize = 10;
+/// Union and symmetric difference (the runs between the found positions are copied).
+const SEARCH_RATIO_MERGE: usize = 14;
+/// Difference with a small minuend.
+const SEARCH_RATIO_DIFF_SMALL_A: usize = 14;
+/// Difference with a small subtrahend (the runs between the found positions are copied).
+const SEARCH_RATIO_DIFF_SMALL_B: usize = 24;
 
 /// Lane primitives on vectors of eight `u16`.
 pub(crate) trait Lanes {
@@ -145,10 +159,151 @@ unsafe fn store_packed<L: Lanes>(
     k + n
 }
 
-/// Whether one side is small enough to gallop through the other one.
+/// Whether `small` is at least `ratio` times smaller than `large`.
 #[inline(always)]
-fn is_skewed(a: &[u16], b: &[u16]) -> bool {
-    a.len().saturating_mul(SKEW_RATIO) < b.len() || b.len().saturating_mul(SKEW_RATIO) < a.len()
+fn search_wins(small: &[u16], large: &[u16], ratio: usize) -> bool {
+    small.len().saturating_mul(ratio) <= large.len()
+}
+
+/// The shorter and the longer of two inputs.
+#[inline(always)]
+fn by_len<'a>(a: &'a [u16], b: &'a [u16]) -> (&'a [u16], &'a [u16]) {
+    if a.len() <= b.len() { (a, b) } else { (b, a) }
+}
+
+/// Index of the first value of `s` that is `>= v` (`s.len()` if none), branch free.
+#[inline(always)]
+fn lower_bound(s: &[u16], v: u16) -> usize {
+    let mut n = s.len();
+    if n == 0 {
+        return 0;
+    }
+    // The answer is in `base..=base + n`, and `base + n <= s.len()`.
+    let mut base = 0;
+    while n > 1 {
+        let half = n / 2;
+        // SAFETY: `base + half < base + n <= s.len()`.
+        let probe = unsafe { *s.get_unchecked(base + half) };
+        base = core::hint::select_unpredictable(probe < v, base + half, base);
+        n -= half;
+    }
+    // SAFETY: `base < base + n == base + 1 <= s.len()`.
+    base + (unsafe { *s.get_unchecked(base) } < v) as usize
+}
+
+/// Number of binary searches run in lockstep by [`search_each`].
+const SEARCH_LANES: usize = 8;
+
+/// Calls `f(v, p)` for the values `v` of `small` in order, where `p` is the index of the first
+/// value of `large` that is `>= v`, until `f` returns `false`.
+///
+/// The searches are branch-free binary searches over the whole of `large`, eight in lockstep:
+/// unlike galloping (one chain of dependent, mispredicted branches) the eight independent
+/// chains of loads fill the pipeline. (Narrowing each group to the part after the previous
+/// group's results would serialize the groups, which costs more than the saved steps.)
+#[inline(always)]
+fn search_each(small: &[u16], large: &[u16], mut f: impl FnMut(u16, usize) -> bool) {
+    let len = large.len();
+    if len == 0 {
+        for &v in small {
+            if !f(v, 0) {
+                return;
+            }
+        }
+        return;
+    }
+    let mut groups = small.chunks_exact(SEARCH_LANES);
+    for g in &mut groups {
+        let mut base = [0usize; SEARCH_LANES];
+        let mut n = len;
+        while n > 1 {
+            let half = n / 2;
+            for t in 0..SEARCH_LANES {
+                // SAFETY: `base[t] + half < base[t] + n <= len`.
+                let probe = unsafe { *large.get_unchecked(base[t] + half) };
+                base[t] = core::hint::select_unpredictable(probe < g[t], base[t] + half, base[t]);
+            }
+            n -= half;
+        }
+        for t in 0..SEARCH_LANES {
+            // SAFETY: `base[t] < base[t] + 1 <= len`.
+            let p = base[t] + (unsafe { *large.get_unchecked(base[t]) } < g[t]) as usize;
+            if !f(g[t], p) {
+                return;
+            }
+        }
+    }
+    for &v in groups.remainder() {
+        if !f(v, lower_bound(large, v)) {
+            return;
+        }
+    }
+}
+
+/// Whether `s[p] == v`, for a position returned by a search (`p <= s.len()`).
+#[inline(always)]
+fn found_at(s: &[u16], p: usize, v: u16) -> bool {
+    s.get(p) == Some(&v)
+}
+
+/// Intersection of `small` with `large` by searches, written to `out[..]`.
+#[inline(always)]
+pub(super) fn intersect_search(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
+    debug_assert!(out.len() >= small.len());
+    let mut k = 0;
+    search_each(small, large, |v, p| {
+        // `k` <= index of `v` in `small` < `out.len()`.
+        out[k].write(v);
+        k += found_at(large, p, v) as usize;
+        true
+    });
+    k
+}
+
+/// `a - b` for a small `a`, by searches into `b`.
+#[inline(always)]
+pub(super) fn difference_search_small(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
+    let mut k = 0;
+    search_each(a, b, |v, p| {
+        out[k].write(v);
+        k += !found_at(b, p, v) as usize;
+        true
+    });
+    k
+}
+
+/// `a - b` for a small `b`: copies the runs of `a` between the values of `b`.
+#[inline(always)]
+pub(super) fn difference_search_large(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
+    let (mut k, mut i) = (0, 0);
+    search_each(b, a, |v, p| {
+        k = copy_tail(&a[i..p], out, k);
+        i = p + found_at(a, p, v) as usize;
+        true
+    });
+    copy_tail(&a[i..], out, k)
+}
+
+/// Union (`XOR == false`) or symmetric difference (`XOR == true`) of a small set with a large
+/// one: copies the runs of `large` between the values of `small`.
+#[inline(always)]
+pub(super) fn merge_search<const XOR: bool>(
+    small: &[u16],
+    large: &[u16],
+    out: &mut [MaybeUninit<u16>],
+) -> usize {
+    let (mut k, mut j) = (0, 0);
+    search_each(small, large, |v, p| {
+        k = copy_tail(&large[j..p], out, k);
+        let found = found_at(large, p, v);
+        j = p + found as usize;
+        if !(XOR && found) {
+            out[k].write(v);
+            k += 1;
+        }
+        true
+    });
+    copy_tail(&large[j..], out, k)
 }
 
 /// Peels a leading zero value off both inputs (`pcmpistrm` treats zero lanes as terminators).
@@ -180,12 +335,23 @@ pub(crate) unsafe fn intersect<L: Lanes>(
     out: &mut [MaybeUninit<u16>],
 ) -> usize {
     check_out(out, a.len().min(b.len()));
-    if a.is_empty() || b.is_empty() {
+    let (small, large) = by_len(a, b);
+    if small.is_empty() {
         return 0;
     }
-    if is_skewed(a, b) {
-        return scalar::array_intersect(a, b, out);
+    if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
+        return intersect_search(small, large, out);
     }
+    unsafe { intersect_blocks::<L>(a, b, out) }
+}
+
+/// Block-wise `pcmpistrm` intersection; both inputs non-empty.
+#[inline(always)]
+pub(crate) unsafe fn intersect_blocks<L: Lanes>(
+    a: &[u16],
+    b: &[u16],
+    out: &mut [MaybeUninit<u16>],
+) -> usize {
     let (mut a, mut b) = (a, b);
     let mut k = 0;
     if strip_zero(&mut a, &mut b) {
@@ -212,11 +378,17 @@ pub(crate) unsafe fn intersect<L: Lanes>(
 
 #[inline(always)]
 pub(crate) unsafe fn intersect_card<L: Lanes>(a: &[u16], b: &[u16]) -> usize {
-    if a.is_empty() || b.is_empty() {
+    let (small, large) = by_len(a, b);
+    if small.is_empty() {
         return 0;
     }
-    if is_skewed(a, b) {
-        return scalar::array_intersect_card(a, b);
+    if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
+        let mut k = 0;
+        search_each(small, large, |v, p| {
+            k += found_at(large, p, v) as usize;
+            true
+        });
+        return k;
     }
     let (mut a, mut b) = (a, b);
     let mut k = strip_zero(&mut a, &mut b) as usize;
@@ -240,11 +412,17 @@ pub(crate) unsafe fn intersect_card<L: Lanes>(a: &[u16], b: &[u16]) -> usize {
 
 #[inline(always)]
 pub(crate) unsafe fn intersects<L: Lanes>(a: &[u16], b: &[u16]) -> bool {
-    if a.is_empty() || b.is_empty() {
+    let (small, large) = by_len(a, b);
+    if small.is_empty() {
         return false;
     }
-    if is_skewed(a, b) {
-        return scalar::array_intersects(a, b);
+    if search_wins(small, large, SEARCH_RATIO_INTERSECT) {
+        let mut any = false;
+        search_each(small, large, |v, p| {
+            any = found_at(large, p, v);
+            !any
+        });
+        return any;
     }
     let (mut a, mut b) = (a, b);
     if strip_zero(&mut a, &mut b) {
@@ -283,9 +461,22 @@ pub(crate) unsafe fn difference<L: Lanes>(
     if b.is_empty() {
         return copy_tail(a, out, 0);
     }
-    if is_skewed(a, b) {
-        return scalar::array_difference(a, b, out);
+    if search_wins(a, b, SEARCH_RATIO_DIFF_SMALL_A) {
+        return difference_search_small(a, b, out);
     }
+    if search_wins(b, a, SEARCH_RATIO_DIFF_SMALL_B) {
+        return difference_search_large(a, b, out);
+    }
+    unsafe { difference_blocks::<L>(a, b, out) }
+}
+
+/// Block-wise `pcmpistrm` difference; both inputs non-empty.
+#[inline(always)]
+pub(crate) unsafe fn difference_blocks<L: Lanes>(
+    a: &[u16],
+    b: &[u16],
+    out: &mut [MaybeUninit<u16>],
+) -> usize {
     let (mut a, mut b) = (a, b);
     let mut k = 0;
     if a[0] == 0 && b[0] != 0 {
@@ -431,30 +622,27 @@ fn merge_small(x: &[u16], y: &[u16], out: &mut [u16]) -> usize {
     k
 }
 
-/// Sentinel for "no previous value" (never equal to a `u16`).
-const NONE: u32 = u32::MAX;
-
 /// Union of a short sorted sequence `pend` (duplicates allowed) with the sorted set `long`,
-/// written to `out[k..]`. Values equal to `last` (the last value written before, or [`NONE`])
-/// are skipped. The runs of `long` between the values of `pend` are found by galloping and
-/// copied in bulk.
+/// written to `out[k..]` after the value `last`; every value is at least `last`, values equal
+/// to it are skipped. The runs of `long` between the values of `pend` are found by galloping
+/// and copied in bulk.
 #[inline(always)]
 fn union_tail(
     pend: &[u16],
     long: &[u16],
     out: &mut [MaybeUninit<u16>],
     mut k: usize,
-    mut last: u32,
+    mut last: u16,
 ) -> usize {
     let mut j = 0;
     for &x in pend {
-        if x as u32 == last {
+        if x == last {
             continue;
         }
         let p = gallop(long, j, x);
         if p > j {
             // `long[j..p]` < x; only its first value can repeat `last`.
-            let skip = (long[j] as u32 == last) as usize;
+            let skip = (long[j] == last) as usize;
             k = copy_tail(&long[j + skip..p], out, k);
         }
         j = p;
@@ -463,10 +651,10 @@ fn union_tail(
         }
         out[k].write(x);
         k += 1;
-        last = x as u32;
+        last = x;
     }
     if j < long.len() {
-        let skip = (long[j] as u32 == last) as usize;
+        let skip = (long[j] == last) as usize;
         k = copy_tail(&long[j + skip..], out, k);
     }
     k
@@ -474,21 +662,21 @@ fn union_tail(
 
 /// Symmetric difference of a short sorted sequence `pend` (duplicates allowed) with the sorted
 /// set `long`, written to `out[k..]`: a value is written iff it occurs exactly once in `pend`,
-/// `long` and `left` (an already decided value, or [`NONE`]) together.
+/// `long` and `left` (the last value of the stream already decided) together.
 #[inline(always)]
 fn xor_tail(
     pend: &[u16],
     long: &[u16],
     out: &mut [MaybeUninit<u16>],
     mut k: usize,
-    left: u32,
+    left: u16,
 ) -> usize {
-    debug_assert!(long.first().is_none_or(|&v| v as u32 != left));
+    debug_assert!(long.first().is_none_or(|&v| v != left));
     let mut j = 0;
     let mut i = 0;
     while i < pend.len() {
         let x = pend[i];
-        let mut count = (x as u32 == left) as usize;
+        let mut count = (x == left) as usize;
         while i < pend.len() && pend[i] == x {
             count += 1;
             i += 1;
@@ -506,12 +694,6 @@ fn xor_tail(
         }
     }
     copy_tail(&long[j..], out, k)
-}
-
-/// The shorter and the longer of two inputs.
-#[inline(always)]
-fn by_len<'a>(a: &'a [u16], b: &'a [u16]) -> (&'a [u16], &'a [u16]) {
-    if a.len() <= b.len() { (a, b) } else { (b, a) }
 }
 
 /// Runs the block-wise merge of `a` and `b` (both at least eight long), calling `emit` with
@@ -584,9 +766,19 @@ pub(crate) unsafe fn union<L: Lanes>(
 ) -> usize {
     check_out(out, a.len() + b.len());
     let (short, long) = by_len(a, b);
-    if short.len() < 8 || short.len().saturating_mul(SKEW_RATIO) < long.len() {
-        return union_tail(short, long, out, 0, NONE);
+    if short.len() < 8 || search_wins(short, long, SEARCH_RATIO_MERGE) {
+        return merge_search::<false>(short, long, out);
     }
+    unsafe { union_blocks::<L>(a, b, out) }
+}
+
+/// Merge network union; both inputs at least eight long.
+#[inline(always)]
+pub(crate) unsafe fn union_blocks<L: Lanes>(
+    a: &[u16],
+    b: &[u16],
+    out: &mut [MaybeUninit<u16>],
+) -> usize {
     unsafe {
         let (cap, dst) = (out.len(), out.as_mut_ptr().cast::<u16>());
         let mut k = 0;
@@ -598,7 +790,7 @@ pub(crate) unsafe fn union<L: Lanes>(
         });
         let mut buf = [0u16; 24];
         let (n, long) = pending(a, b, i, j, &[], hi, &mut buf);
-        let last = lanes_of(prev)[7] as u32;
+        let last = lanes_of(prev)[7];
         union_tail(&buf[..n], long, out, k, last)
     }
 }
@@ -607,9 +799,19 @@ pub(crate) unsafe fn union<L: Lanes>(
 pub(crate) unsafe fn xor<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len() + b.len());
     let (short, long) = by_len(a, b);
-    if short.len() < 8 || short.len().saturating_mul(SKEW_RATIO) < long.len() {
-        return xor_tail(short, long, out, 0, NONE);
+    if short.len() < 8 || search_wins(short, long, SEARCH_RATIO_MERGE) {
+        return merge_search::<true>(short, long, out);
     }
+    unsafe { xor_blocks::<L>(a, b, out) }
+}
+
+/// Merge network symmetric difference; both inputs at least eight long.
+#[inline(always)]
+pub(crate) unsafe fn xor_blocks<L: Lanes>(
+    a: &[u16],
+    b: &[u16],
+    out: &mut [MaybeUninit<u16>],
+) -> usize {
     unsafe {
         let (cap, dst) = (out.len(), out.as_mut_ptr().cast::<u16>());
         let mut k = 0;
@@ -621,6 +823,6 @@ pub(crate) unsafe fn xor<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<
         let lanes = lanes_of(prev);
         let mut buf = [0u16; 24];
         let (n, long) = pending(a, b, i, j, &lanes[7..], hi, &mut buf);
-        xor_tail(&buf[..n], long, out, k, lanes[6] as u32)
+        xor_tail(&buf[..n], long, out, k, lanes[6])
     }
 }
