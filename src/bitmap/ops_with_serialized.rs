@@ -95,7 +95,9 @@ impl RoaringBitmap128 {
                     .map_err(|_| too_large())?;
                 reader.seek(io::SeekFrom::Current(delta))?;
             }
-            let mut container = payloads.read(&mut reader, low, run, false)?;
+            // The few payloads read here are fully validated (a popcount per bitmap), so a
+            // corrupt input is an error and never an invalid container in the result.
+            let mut container = payloads.read(&mut reader, low, run, true)?;
             position = target.saturating_add(payload_size(low, run) as u64);
             container.intersect_with(ours);
             if !container.is_empty() {
