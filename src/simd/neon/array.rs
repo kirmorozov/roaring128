@@ -7,9 +7,12 @@
 //!   (`umin`/`umax` + `zip`/`trn`) that emits 8 sorted values per step. Duplicates are always
 //!   adjacent in the merged stream and are removed by comparing every value with its neighbours
 //!   before the compacting store.
+//!   The last, partial block of each side is completed with padding values that sort last and
+//!   are dropped on output, so no scalar tail is needed.
 //! * When one side is short (fewer than 8 values left, or a size ratio of at least
 //!   [`GALLOP_RATIO`](crate::simd::GALLOP_RATIO)) every value of the short side is located in the
-//!   long one by galloping, and untouched stretches of the long side are block-copied.
+//!   long one with 32-value vector probes (galloping beyond 128 values), and the stretches of
+//!   the long side in between are block-copied.
 //!
 //! Stores of full vectors are only issued where at least 8 lanes of the output are in bounds;
 //! everything else goes through bounds-checked slice accesses.
@@ -17,9 +20,9 @@
 use core::arch::aarch64::*;
 use core::mem::MaybeUninit;
 
-use super::tables::{POPCOUNT, SHUFFLE};
+use super::tables::{PAD, POPCOUNT, SHUFFLE, TAIL_PADDING, TAIL_SHUFFLE};
 use crate::simd::scalar::{self, gallop, skewed};
-use crate::simd::{GALLOP_RATIO, assume_init, check_out};
+use crate::simd::{GALLOP_RATIO, check_out};
 
 /// `u16` lanes per vector.
 const LANES: usize = 8;
@@ -188,6 +191,114 @@ fn padded(r: &[u16]) -> uint16x8_t {
     unsafe { load(buf.as_ptr()) }
 }
 
+/// Copies `a[from..to]` to `out[k..]`, returns the new length. Runs of up to 8 values take a
+/// single vector store when the 8 lanes are in bounds on both sides (the lanes past the run are
+/// overwritten later or lie past the result).
+#[inline]
+#[target_feature(enable = "neon")]
+fn copy_run(a: &[u16], from: usize, to: usize, out: &mut [MaybeUninit<u16>], k: usize) -> usize {
+    let n = to - from;
+    if n <= LANES && from + LANES <= a.len() && k + LANES <= out.len() {
+        // SAFETY: both 8-value ranges were checked above.
+        unsafe { vst1q_u16(out.as_mut_ptr().add(k).cast(), load(a.as_ptr().add(from))) };
+        k + n
+    } else {
+        copy(&a[from..to], out, k)
+    }
+}
+
+/// Number of values below `target` in `chunk`, a prefix of it when `chunk` is sorted.
+#[inline]
+#[target_feature(enable = "neon")]
+fn count_below(chunk: uint16x8_t, target: uint16x8_t) -> usize {
+    // The comparison lanes are 0 or -1: their sum is minus the count.
+    0u16.wrapping_sub(vaddvq_u16(vcltq_u16(chunk, target))) as usize
+}
+
+/// Number of the 32 values at `p` that are below `target` (sorted values: a prefix).
+///
+/// # Safety
+/// `p` must be valid for reading 32 values.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn count_below_32(p: *const u16, target: uint16x8_t) -> usize {
+    // SAFETY: guaranteed by the caller.
+    let below = unsafe {
+        vaddq_u16(
+            vaddq_u16(
+                vcltq_u16(load(p), target),
+                vcltq_u16(load(p.add(LANES)), target),
+            ),
+            vaddq_u16(
+                vcltq_u16(load(p.add(2 * LANES)), target),
+                vcltq_u16(load(p.add(3 * LANES)), target),
+            ),
+        )
+    };
+    // The comparison lanes are 0 or -1: the sum is minus the count.
+    0u16.wrapping_sub(vaddvq_u16(below)) as usize
+}
+
+/// Values covered by one probe of [`seek`].
+const PROBE: usize = 4 * LANES;
+
+/// Index of the first value `>= v` in `a[x..]` (sorted), or `a.len()`.
+///
+/// Distances below 128 values are found with probes of 32 values (four compares and one
+/// horizontal sum, no dependent loads), longer ones by galloping. The first probe is inlined,
+/// the rest is out of line.
+#[inline]
+#[target_feature(enable = "neon")]
+fn seek(a: &[u16], x: usize, v: u16) -> usize {
+    if x + PROBE <= a.len() {
+        // SAFETY: `x + 32 <= a.len()`.
+        let n = unsafe { count_below_32(a.as_ptr().add(x), vdupq_n_u16(v)) };
+        if n < PROBE {
+            return x + n;
+        }
+        return seek_far(a, x + PROBE, v);
+    }
+    seek_near(a, x, v)
+}
+
+/// [`seek`] past its first probe: three more probes, then galloping.
+#[inline(never)]
+#[target_feature(enable = "neon")]
+fn seek_far(a: &[u16], mut x: usize, v: u16) -> usize {
+    let target = vdupq_n_u16(v);
+    for _ in 0..3 {
+        if x + PROBE > a.len() {
+            return seek_near(a, x, v);
+        }
+        // SAFETY: `x + 32 <= a.len()`.
+        let n = unsafe { count_below_32(a.as_ptr().add(x), target) };
+        if n < PROBE {
+            return x + n;
+        }
+        x += PROBE;
+    }
+    gallop(a, x, v)
+}
+
+/// [`seek`] with fewer than 32 values left.
+#[inline(never)]
+#[target_feature(enable = "neon")]
+fn seek_near(a: &[u16], mut x: usize, v: u16) -> usize {
+    let target = vdupq_n_u16(v);
+    while x + LANES <= a.len() {
+        // SAFETY: `x + 8 <= a.len()`.
+        let n = count_below(unsafe { load(a.as_ptr().add(x)) }, target);
+        if n < LANES {
+            return x + n;
+        }
+        x += LANES;
+    }
+    while x < a.len() && a[x] < v {
+        x += 1;
+    }
+    x
+}
+
 // ---------------------------------------------------------------------------------------------
 // Intersection
 // ---------------------------------------------------------------------------------------------
@@ -235,7 +346,7 @@ fn intersect_blocks(
 /// Intersection of a short array with a long one, appended to `out[k..]`.
 #[inline]
 #[target_feature(enable = "neon")]
-fn intersect_gallop(
+fn intersect_short(
     small: &[u16],
     large: &[u16],
     out: &mut [MaybeUninit<u16>],
@@ -243,7 +354,7 @@ fn intersect_gallop(
 ) -> usize {
     let mut j = 0;
     for &v in small {
-        j = gallop(large, j, v);
+        j = seek(large, j, v);
         if j == large.len() {
             break;
         }
@@ -258,11 +369,11 @@ fn intersect_gallop(
 
 #[inline]
 #[target_feature(enable = "neon")]
-fn intersect_card_gallop(small: &[u16], large: &[u16]) -> usize {
+fn intersect_card_short(small: &[u16], large: &[u16]) -> usize {
     let mut k = 0;
     let mut j = 0;
     for &v in small {
-        j = gallop(large, j, v);
+        j = seek(large, j, v);
         if j == large.len() {
             break;
         }
@@ -276,10 +387,10 @@ fn intersect_card_gallop(small: &[u16], large: &[u16]) -> usize {
 
 #[inline]
 #[target_feature(enable = "neon")]
-fn intersects_gallop(small: &[u16], large: &[u16]) -> bool {
+fn intersects_short(small: &[u16], large: &[u16]) -> bool {
     let mut j = 0;
     for &v in small {
-        j = gallop(large, j, v);
+        j = seek(large, j, v);
         if j == large.len() {
             return false;
         }
@@ -302,7 +413,7 @@ fn by_len<'a>(x: &'a [u16], y: &'a [u16]) -> (&'a [u16], &'a [u16]) {
 pub(super) fn intersect(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len().min(b.len()));
     if let Some((small, large)) = skewed(a, b) {
-        return intersect_gallop(small, large, out, 0);
+        return intersect_short(small, large, out, 0);
     }
     let mut k = 0;
     // Every match is a distinct value of the shorter input, so `k + matches <= out.len()`.
@@ -313,14 +424,14 @@ pub(super) fn intersect(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> u
         unreachable!()
     };
     let (small, large) = by_len(&a[i..], &b[j..]);
-    intersect_gallop(small, large, out, k)
+    intersect_short(small, large, out, k)
 }
 
 #[inline]
 #[target_feature(enable = "neon")]
 pub(super) fn intersect_card(a: &[u16], b: &[u16]) -> usize {
     if let Some((small, large)) = skewed(a, b) {
-        return intersect_card_gallop(small, large);
+        return intersect_card_short(small, large);
     }
     // Lane `l` counts the matches of lane `l` of the blocks of `a`: at most 8192 per lane.
     let mut acc = vdupq_n_u16(0);
@@ -331,20 +442,20 @@ pub(super) fn intersect_card(a: &[u16], b: &[u16]) -> usize {
         unreachable!()
     };
     let (small, large) = by_len(&a[i..], &b[j..]);
-    vaddlvq_u16(acc) as usize + intersect_card_gallop(small, large)
+    vaddlvq_u16(acc) as usize + intersect_card_short(small, large)
 }
 
 #[inline]
 #[target_feature(enable = "neon")]
 pub(super) fn intersects(a: &[u16], b: &[u16]) -> bool {
     if let Some((small, large)) = skewed(a, b) {
-        return intersects_gallop(small, large);
+        return intersects_short(small, large);
     }
     match intersect_blocks(a, b, |_, eq| !any_set(eq)) {
         None => true,
         Some((i, j)) => {
             let (small, large) = by_len(&a[i..], &b[j..]);
-            intersects_gallop(small, large)
+            intersects_short(small, large)
         }
     }
 }
@@ -359,7 +470,7 @@ pub(super) fn intersects(a: &[u16], b: &[u16]) -> bool {
 fn difference_short_a(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>], mut k: usize) -> usize {
     let mut j = 0;
     for (x, &v) in a.iter().enumerate() {
-        j = gallop(b, j, v);
+        j = seek(b, j, v);
         if j == b.len() {
             return copy(&a[x..], out, k);
         }
@@ -379,8 +490,8 @@ fn difference_short_a(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>], mut k:
 fn difference_short_b(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>], mut k: usize) -> usize {
     let mut i = 0;
     for &v in b {
-        let next = gallop(a, i, v);
-        k = copy(&a[i..next], out, k);
+        let next = seek(a, i, v);
+        k = copy_run(a, i, next, out, k);
         i = next;
         if i == a.len() {
             return k;
@@ -487,13 +598,6 @@ fn merge(a: uint16x8_t, b: uint16x8_t) -> (uint16x8_t, uint16x8_t) {
     (vzip1q_u16(l, h), vzip2q_u16(l, h))
 }
 
-/// A vector whose last lane differs from the first lane of `v`.
-#[inline]
-#[target_feature(enable = "neon")]
-fn not_before(v: uint16x8_t) -> uint16x8_t {
-    vdupq_laneq_u16::<0>(vmvnq_u16(v))
-}
-
 /// A vector whose first lane differs from the last lane of `v`.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -501,55 +605,114 @@ fn not_after(v: uint16x8_t) -> uint16x8_t {
     vdupq_laneq_u16::<7>(vmvnq_u16(v))
 }
 
-/// Lanes of `v` that differ from their predecessor (lane 7 of `prev` precedes lane 0).
+/// Padding lanes of `v` (values `>= PAD`).
 #[inline]
 #[target_feature(enable = "neon")]
-fn first_of_equal(prev: uint16x8_t, v: uint16x8_t) -> u8 {
-    clear_lanes(vceqq_u16(vextq_u16::<7>(prev, v), v))
+fn padding(v: uint16x8_t) -> uint16x8_t {
+    vcgeq_u16(v, vdupq_n_u16(PAD))
 }
 
-/// Lanes of `v` that differ from both neighbours (lane 7 of `prev` precedes lane 0, lane 0 of
-/// `next` follows lane 7).
+/// Union output lanes of `v`: real values that differ from their predecessor (lane 7 of `prev`
+/// precedes lane 0).
 #[inline]
 #[target_feature(enable = "neon")]
-fn unpaired(prev: uint16x8_t, v: uint16x8_t, next: uint16x8_t) -> u8 {
+fn union_keep(prev: uint16x8_t, v: uint16x8_t) -> u8 {
+    let dup = vceqq_u16(vextq_u16::<7>(prev, v), v);
+    clear_lanes(vorrq_u16(dup, padding(v)))
+}
+
+/// Symmetric difference output lanes of `v`: real values that differ from both neighbours
+/// (lane 7 of `prev` precedes lane 0, lane 0 of `next` follows lane 7).
+#[inline]
+#[target_feature(enable = "neon")]
+fn xor_keep(prev: uint16x8_t, v: uint16x8_t, next: uint16x8_t) -> u8 {
     let left = vceqq_u16(vextq_u16::<7>(prev, v), v);
     let right = vceqq_u16(vextq_u16::<1>(v, next), v);
-    clear_lanes(vorrq_u16(left, right))
+    clear_lanes(vorrq_u16(vorrq_u16(left, right), padding(v)))
 }
 
-/// Merges `a` and `b` (both at least 8 long) 8 values at a time, calling
-/// `emit(previous low, low, high)` for every sorted block of 8 that leaves the network.
-/// Returns the values still in the network (`high`, sorted), the last emitted block and the
-/// positions in `a` and `b`; one side has fewer than 8 values left.
+/// Number of values of `a` below `PAD` (the others, if any, end the array).
+#[inline]
+#[target_feature(enable = "neon")]
+fn below_pad(a: &[u16]) -> usize {
+    let mut n = a.len();
+    while n > 0 && a[n - 1] >= PAD {
+        n -= 1;
+    }
+    n
+}
+
+/// The 8-value block of `a` at `x`. A partial last block (1 to 7 values) is completed with the
+/// distinct values `PAD + lane`, which sort after every value of `a`.
+///
+/// `a` must hold at least 8 values, all below `PAD`, and `x < a.len()`.
+#[inline]
+#[target_feature(enable = "neon")]
+fn load_block(a: &[u16], x: usize) -> uint16x8_t {
+    debug_assert!(a.len() >= LANES && x < a.len());
+    if x + LANES <= a.len() {
+        // SAFETY: 8 values are left.
+        return unsafe { load(a.as_ptr().add(x)) };
+    }
+    let r = (a.len() - x) & (LANES - 1);
+    // SAFETY: `a` holds at least 8 values; the table entries hold 16 bytes.
+    unsafe {
+        let last = vreinterpretq_u8_u16(load(a.as_ptr().add(a.len() - LANES)));
+        let moved = vqtbl1q_u8(last, vld1q_u8(TAIL_SHUFFLE.0[r].as_ptr()));
+        vorrq_u16(
+            vreinterpretq_u16_u8(moved),
+            load(TAIL_PADDING.0[r].as_ptr()),
+        )
+    }
+}
+
+/// Streams `a` and `b` (at least 8 values each, all below `PAD`) through the merge network,
+/// calling `emit(previous low, low, high)` for every sorted block of 8 that leaves it. The last
+/// block of each side is completed with padding (see [`load_block`]), which the emitters drop.
 ///
 /// Every emitted value is smaller than all values not loaded yet, so equal values of `a` and `b`
 /// are adjacent in the stream of emitted blocks followed by `high`.
+///
+/// Once one side is exhausted, the other one is merged only while the network still holds a
+/// real value at or above its next value. Returns the network content (`high`), the last
+/// emitted block and the unmerged rest of the other side, all of whose values are larger than
+/// the real values of `high`.
 #[inline]
 #[target_feature(enable = "neon")]
-fn merge_blocks(
-    a: &[u16],
-    b: &[u16],
+fn merge_stream<'a>(
+    a: &'a [u16],
+    b: &'a [u16],
     mut emit: impl FnMut(uint16x8_t, uint16x8_t, uint16x8_t),
-) -> (uint16x8_t, uint16x8_t, usize, usize) {
+) -> (uint16x8_t, uint16x8_t, &'a [u16]) {
     debug_assert!(a.len() >= LANES && b.len() >= LANES);
-    let (pa, pb) = (a.as_ptr(), b.as_ptr());
     // SAFETY: both inputs hold at least 8 values.
-    let (mut lo, mut hi) = unsafe { merge(load(pa), load(pb)) };
-    emit(not_before(lo), lo, hi);
+    let (mut lo, mut hi) = unsafe { merge(load(a.as_ptr()), load(b.as_ptr())) };
+    emit(vdupq_laneq_u16::<0>(vmvnq_u16(lo)), lo, hi);
     let (mut i, mut j) = (LANES, LANES);
-    while i + LANES <= a.len() && j + LANES <= b.len() {
-        // SAFETY: `i < a.len()` and `j < b.len()`.
-        let take_a = unsafe { *pa.add(i) <= *pb.add(j) };
-        // SAFETY: the selected side has 8 values left.
-        let v = unsafe { load(if take_a { pa.add(i) } else { pb.add(j) }) };
-        i += LANES * take_a as usize;
-        j += LANES * !take_a as usize;
+    while i < a.len() && j < b.len() {
+        let take_a = a[i] <= b[j];
+        let (side, x) = if take_a { (a, i) } else { (b, j) };
+        let v = load_block(side, x);
+        let x = (x + LANES).min(side.len());
+        (i, j) = if take_a { (x, j) } else { (i, x) };
         let prev = lo;
         (lo, hi) = merge(hi, v);
         emit(prev, lo, hi);
     }
-    (hi, lo, i, j)
+    let (rest, mut x) = if i < a.len() { (a, i) } else { (b, j) };
+    let pad = vdupq_n_u16(PAD);
+    while x < rest.len() {
+        let next = vdupq_n_u16(rest[x]);
+        if !any_set(vandq_u16(vcgeq_u16(hi, next), vcltq_u16(hi, pad))) {
+            break;
+        }
+        let v = load_block(rest, x);
+        x = (x + LANES).min(rest.len());
+        let prev = lo;
+        (lo, hi) = merge(hi, v);
+        emit(prev, lo, hi);
+    }
+    (hi, lo, &rest[x..])
 }
 
 /// Union of a short array with a long one, appended to `out[k..]`.
@@ -558,8 +721,8 @@ fn merge_blocks(
 fn union_short(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>], mut k: usize) -> usize {
     let mut j = 0;
     for &v in small {
-        let next = gallop(large, j, v);
-        k = copy(&large[j..next], out, k);
+        let next = seek(large, j, v);
+        k = copy_run(large, j, next, out, k);
         j = next;
         if j < large.len() && large[j] == v {
             j += 1;
@@ -576,8 +739,8 @@ fn union_short(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>], mut k
 fn xor_short(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>], mut k: usize) -> usize {
     let mut j = 0;
     for &v in small {
-        let next = gallop(large, j, v);
-        k = copy(&large[j..next], out, k);
+        let next = seek(large, j, v);
+        k = copy_run(large, j, next, out, k);
         j = next;
         if j < large.len() && large[j] == v {
             j += 1;
@@ -589,62 +752,43 @@ fn xor_short(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>], mut k: 
     copy(&large[j..], out, k)
 }
 
-/// The remainders of [`merge_blocks`] as (short, long): one of them has fewer than 8 values.
-#[inline]
-#[target_feature(enable = "neon")]
-fn remainders<'a>(a: &'a [u16], b: &'a [u16], i: usize, j: usize) -> (&'a [u16], &'a [u16]) {
-    let (ra, rb) = (&a[i..], &b[j..]);
-    if ra.len() < LANES { (ra, rb) } else { (rb, ra) }
-}
-
 #[inline]
 #[target_feature(enable = "neon")]
 pub(super) fn union(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len() + b.len());
-    if a.len() < LANES || b.len() < LANES || skewed(a, b).is_some() {
+    let (na, nb) = (below_pad(a), below_pad(b));
+    if na < LANES || nb < LANES || skewed(a, b).is_some() {
         let (small, large) = by_len(a, b);
         return union_short(small, large, out, 0);
     }
-    let dst = out.as_mut_ptr().cast::<u16>();
+    // The stores are checked: the padding can make the network emit after the real values ran
+    // short of 8 lanes of room.
     let mut k = 0;
-    let (hi, last, i, j) = merge_blocks(a, b, |prev, lo, _| {
-        // SAFETY: at most `loaded - 16` values were written before this block (8 values are
-        // still in the network), so the 8 lanes end within `a.len() + b.len() <= out.len()`.
-        k = unsafe { store_compact(dst, k, lo, first_of_equal(prev, lo)) };
+    let (hi, last, rest) = merge_stream(&a[..na], &b[..nb], |prev, lo, _| {
+        k = store_compact_checked(out, k, lo, union_keep(prev, lo));
     });
-    // `hi` without duplicates (of the last emitted value or inside `hi`), then the remainders.
-    let mut rest = [0u16; LANES];
-    // SAFETY: `rest` holds 8 values.
-    let n = unsafe { store_compact(rest.as_mut_ptr(), 0, hi, first_of_equal(last, hi)) };
-    let (short, long) = remainders(a, b, i, j);
-    let mut small = [MaybeUninit::uninit(); 2 * LANES];
-    let m = scalar::array_union_merge(&rest[..n], short, &mut small, 0, 0, 0);
-    // SAFETY: the merge initialized the first `m` values.
-    union_short(unsafe { assume_init(&small, m) }, long, out, k)
+    k = store_compact_checked(out, k, hi, union_keep(last, hi));
+    k = copy(rest, out, k);
+    // The values `>= PAD` (at most 8 per side) come last.
+    scalar::array_union_merge(&a[na..], &b[nb..], out, 0, 0, k)
 }
 
 #[inline]
 #[target_feature(enable = "neon")]
 pub(super) fn xor(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len() + b.len());
-    if a.len() < LANES || b.len() < LANES || skewed(a, b).is_some() {
+    let (na, nb) = (below_pad(a), below_pad(b));
+    if na < LANES || nb < LANES || skewed(a, b).is_some() {
         let (small, large) = by_len(a, b);
         return xor_short(small, large, out, 0);
     }
-    let dst = out.as_mut_ptr().cast::<u16>();
     let mut k = 0;
-    let (hi, last, i, j) = merge_blocks(a, b, |prev, lo, hi| {
+    let (hi, last, rest) = merge_stream(&a[..na], &b[..nb], |prev, lo, hi| {
         // The value after `lo` in the stream is `hi[0]`: equal values are never still unloaded.
-        // SAFETY: as for the union.
-        k = unsafe { store_compact(dst, k, lo, unpaired(prev, lo, hi)) };
+        k = store_compact_checked(out, k, lo, xor_keep(prev, lo, hi));
     });
-    // Values of `hi` may still pair with unloaded values, which the final merges handle.
-    let mut rest = [0u16; LANES];
-    // SAFETY: `rest` holds 8 values.
-    let n = unsafe { store_compact(rest.as_mut_ptr(), 0, hi, unpaired(last, hi, not_after(hi))) };
-    let (short, long) = remainders(a, b, i, j);
-    let mut small = [MaybeUninit::uninit(); 2 * LANES];
-    let m = scalar::array_xor_merge(&rest[..n], short, &mut small, 0, 0, 0);
-    // SAFETY: the merge initialized the first `m` values.
-    xor_short(unsafe { assume_init(&small, m) }, long, out, k)
+    // The real values of `hi` are below all values of `rest`: nothing pairs across.
+    k = store_compact_checked(out, k, hi, xor_keep(last, hi, not_after(hi)));
+    k = copy(rest, out, k);
+    scalar::array_xor_merge(&a[na..], &b[nb..], out, 0, 0, k)
 }

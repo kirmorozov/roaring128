@@ -11,9 +11,52 @@ pub(super) static SHUFFLE: Aligned<[[u8; 16]; 256]> = Aligned(shuffle_table());
 /// Number of set bits of every byte value.
 pub(super) static POPCOUNT: Aligned<[u8; 256]> = Aligned(popcount_table());
 
+/// Twice the number of set bits of every byte value: the output advance in bytes when every set
+/// bit becomes one `u16`.
+pub(super) static POPCOUNT_X2: Aligned<[u8; 256]> = Aligned(popcount_x2_table());
+
 /// `BIT_POSITIONS[b]` holds the indices (`0..8`) of the set bits of byte `b` in increasing
 /// order, followed by zeros.
 pub(super) static BIT_POSITIONS: Aligned<[[u8; 8]; 256]> = Aligned(bit_positions_table());
+
+/// First padding value of the merge network: partial blocks are completed with `PAD + lane`.
+pub(super) const PAD: u16 = 0xFFF8;
+
+/// `TAIL_SHUFFLE[r]` moves the last `r` `u16` lanes of a vector to the front and zeroes the rest.
+pub(super) static TAIL_SHUFFLE: Aligned<[[u8; 16]; 8]> = Aligned(tail_shuffle_table());
+
+/// `TAIL_PADDING[r]` is zero in the first `r` lanes and `PAD + lane` in the others.
+pub(super) static TAIL_PADDING: Aligned<[[u16; 8]; 8]> = Aligned(tail_padding_table());
+
+const fn tail_shuffle_table() -> [[u8; 16]; 8] {
+    let mut table = [[0xFF; 16]; 8];
+    let mut r = 0;
+    while r < 8 {
+        let mut lane = 0;
+        while lane < r {
+            let src = 8 - r + lane;
+            table[r][2 * lane] = 2 * src as u8;
+            table[r][2 * lane + 1] = 2 * src as u8 + 1;
+            lane += 1;
+        }
+        r += 1;
+    }
+    table
+}
+
+const fn tail_padding_table() -> [[u16; 8]; 8] {
+    let mut table = [[0; 8]; 8];
+    let mut r = 0;
+    while r < 8 {
+        let mut lane = r;
+        while lane < 8 {
+            table[r][lane] = PAD + lane as u16;
+            lane += 1;
+        }
+        r += 1;
+    }
+    table
+}
 
 const fn shuffle_table() -> [[u8; 16]; 256] {
     // Out-of-range indices make `tbl` produce zero bytes.
@@ -40,6 +83,16 @@ const fn popcount_table() -> [u8; 256] {
     let mut b = 0;
     while b < 256 {
         table[b] = (b as u8).count_ones() as u8;
+        b += 1;
+    }
+    table
+}
+
+const fn popcount_x2_table() -> [u8; 256] {
+    let mut table = [0; 256];
+    let mut b = 0;
+    while b < 256 {
+        table[b] = 2 * (b as u8).count_ones() as u8;
         b += 1;
     }
     table

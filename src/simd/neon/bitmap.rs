@@ -9,7 +9,7 @@
 use core::arch::aarch64::*;
 use core::mem::MaybeUninit;
 
-use super::tables::{BIT_POSITIONS, POPCOUNT};
+use super::tables::{BIT_POSITIONS, POPCOUNT_X2};
 use crate::simd::scalar::{AND, ANDNOT, OR, XOR};
 use crate::simd::{BITMAP_WORDS, Words};
 
@@ -254,58 +254,106 @@ pub(super) fn count_runs(a: &Words) -> u32 {
     vaddlvq_u16(acc)
 }
 
-/// Chunks with at least this many set bits are decoded with the branch-free byte table path,
-/// sparser chunks bit by bit.
-const DENSE_CHUNK_BITS: usize = 16;
+/// A chunk is decoded with the byte table when the previous chunk had at least this many set
+/// bits (about 8% density), bit by bit otherwise. The table path costs 7 instructions per byte
+/// whatever the density; the bit loop about 7 per set bit plus 2 per word.
+const DENSE_CHUNK_BITS: usize = 40;
+
+/// Output room that lets a chunk be decoded without counting its bits first. The table path
+/// stores 8 lanes per byte after the values of the bytes before it, so it ends at most
+/// `min(n + 8, 512)` values after the start of the chunk (`n` set bits).
+const CHUNK_ROOM: usize = CHUNK_WORDS * 64;
 
 #[inline]
 #[target_feature(enable = "neon")]
 pub(super) fn to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
     let cap = out.len();
-    let dst = out.as_mut_ptr().cast::<u16>();
-    let pa = a.as_ptr();
-    let eight = vdupq_n_u16(8);
     let mut k = 0;
+    let mut dense = false;
     for (chunk, words) in a.as_chunks::<CHUNK_WORDS>().0.iter().enumerate() {
-        let first = chunk * CHUNK_WORDS;
-        // SAFETY: `first + 8 <= BITMAP_WORDS`.
-        let n = vaddlvq_u8(cnt4(unsafe { load4(pa.add(first)) })) as usize;
-        if n == 0 {
-            continue;
-        }
-        assert!(n <= cap - k, "bitmap_to_array: output buffer too small");
-        if n >= DENSE_CHUNK_BITS && cap - k - n >= 8 {
-            // Every byte stores the 8 lanes `base + BIT_POSITIONS[byte]` and advances by its
-            // popcount. The last store ends before `k + n + 8 <= cap`. The position is kept in
-            // bytes so that the doubling folds into the `add` (`str q` has no 2-byte scaling).
-            let mut base = vdupq_n_u16((first * 64) as u16);
-            let mut offset = 2 * k;
-            for &w in words {
-                for byte in 0..8 {
-                    let b = (w >> (8 * byte)) as u8 as usize;
-                    // SAFETY: the table entry has 8 bytes; `offset / 2 + 8 <= cap` as shown above.
-                    unsafe {
-                        let pos = vld1_u8(BIT_POSITIONS.0[b].as_ptr());
-                        let p = dst.cast::<u8>().add(offset).cast::<u16>();
-                        vst1q_u16(p, vaddw_u8(base, pos));
-                    }
-                    offset += 2 * POPCOUNT.0[b] as usize;
-                    base = vaddq_u16(base, eight);
-                }
-            }
-            k = offset / 2;
+        let base = (chunk * CHUNK_WORDS * 64) as u16;
+        let start = k;
+        let room = cap - k;
+        let use_table = if room >= CHUNK_ROOM {
+            dense
         } else {
-            for (i, &w) in words.iter().enumerate() {
-                let base = ((first + i) * 64) as u16;
-                let mut w = w;
-                while w != 0 {
-                    // SAFETY: exactly `n <= cap - k` values are written for this chunk.
-                    unsafe { dst.add(k).write(base + w.trailing_zeros() as u16) };
-                    k += 1;
-                    w &= w - 1;
-                }
-            }
-        }
+            // Close to the end of the output: count the chunk first.
+            // SAFETY: the chunk holds 8 words.
+            let n = vaddlvq_u8(cnt4(unsafe { load4(words.as_ptr()) })) as usize;
+            assert!(n <= room, "bitmap_to_array: output buffer too small");
+            dense && room - n >= 8
+        };
+        let dst = out.as_mut_ptr().cast::<u16>();
+        k = if use_table {
+            // SAFETY: the table path writes up to `k + min(n + 8, 512) <= cap`.
+            unsafe { decode_dense(words, base, dst, k) }
+        } else {
+            // SAFETY: exactly `n <= cap - k` values are written.
+            unsafe { decode_sparse(words, base, dst, k) }
+        };
+        // Densities are usually similar in neighbouring chunks; predicting from the previous
+        // chunk avoids counting every chunk up front.
+        dense = k - start >= DENSE_CHUNK_BITS;
     }
     k
+}
+
+/// Byte table path: every byte stores the 8 lanes `base + BIT_POSITIONS[byte]` (only the first
+/// popcount lanes are kept) and advances by its popcount. Branch-free.
+///
+/// # Safety
+/// `dst[k..k + min(n + 8, 512)]` must be valid for writes, `n` being the number of set bits of
+/// the chunk.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn decode_dense(words: &[u64; CHUNK_WORDS], base: u16, dst: *mut u16, k: usize) -> usize {
+    let eight = vdupq_n_u16(8);
+    let mut base = vdupq_n_u16(base);
+    // The position is kept in bytes and advanced with a doubled popcount table, so the only
+    // loop-carried dependency is one plain `add` per byte (`str q` cannot scale by 2).
+    let dst = dst.cast::<u8>();
+    let mut offset = 2 * k;
+    for &w in words {
+        for byte in 0..8 {
+            let b = (w >> (8 * byte)) as u8 as usize;
+            // SAFETY: the table entry has 8 bytes; this store ends 8 values after the values of
+            // the previous bytes, so before `k + min(n + 8, 512)` as guaranteed by the caller.
+            unsafe {
+                let pos = vld1_u8(BIT_POSITIONS.0[b].as_ptr());
+                vst1q_u16(dst.add(offset).cast(), vaddw_u8(base, pos));
+            }
+            offset += POPCOUNT_X2.0[b] as usize;
+            base = vaddq_u16(base, eight);
+        }
+    }
+    offset / 2
+}
+
+/// Bit loop: `rbit` + `clz` per set bit, zero words skipped.
+///
+/// # Safety
+/// `dst[k..k + n]` must be valid for writes, `n` being the number of set bits of the chunk.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn decode_sparse(words: &[u64; CHUNK_WORDS], base: u16, dst: *mut u16, k: usize) -> usize {
+    // SAFETY: `n` values are written from `k`.
+    let mut p = unsafe { dst.add(k) };
+    let mut base = base;
+    for &w in words {
+        // Bit-reversed once, so every set bit costs `clz` + clearing it by its index (a plain
+        // `w & (w - 1)` loop makes LLVM count the bits up front for a trip count).
+        let mut r = w.reverse_bits();
+        while r != 0 {
+            let lz = r.leading_zeros();
+            // SAFETY: as above.
+            unsafe {
+                p.write(base | lz as u16);
+                p = p.add(1);
+            }
+            r ^= (1 << 63) >> lz;
+        }
+        base = base.wrapping_add(64);
+    }
+    // SAFETY: `p` was derived from `dst` and only moved forward.
+    k + unsafe { p.offset_from_unsigned(dst.add(k)) }
 }
