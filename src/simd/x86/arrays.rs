@@ -270,11 +270,7 @@ fn found_at(s: &[u16], p: usize, v: u16) -> bool {
 
 /// Intersection of `small` with `large` by searches, written to `out[..]`.
 #[inline(always)]
-pub(super) fn intersect_search(
-    small: &[u16],
-    large: &[u16],
-    out: &mut [MaybeUninit<u16>],
-) -> usize {
+fn intersect_search(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     debug_assert!(out.len() >= small.len());
     let mut k = 0;
     search_each(
@@ -293,7 +289,7 @@ pub(super) fn intersect_search(
 
 /// `a - b` for a small `a`, by searches into `b`.
 #[inline(always)]
-pub(super) fn difference_search_small(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
+fn difference_search_small(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     let mut k = 0;
     search_each(
         a,
@@ -310,7 +306,7 @@ pub(super) fn difference_search_small(a: &[u16], b: &[u16], out: &mut [MaybeUnin
 
 /// `a - b` for a small `b`: copies the runs of `a` between the values of `b`.
 #[inline(always)]
-pub(super) fn difference_search_large(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
+fn difference_search_large(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     let (mut k, mut i) = (0, 0);
     search_each(
         b,
@@ -328,7 +324,7 @@ pub(super) fn difference_search_large(a: &[u16], b: &[u16], out: &mut [MaybeUnin
 /// Union (`XOR == false`) or symmetric difference (`XOR == true`) of a small set with a large
 /// one: copies the runs of `large` between the values of `small`.
 #[inline(always)]
-pub(super) fn merge_search<const XOR: bool>(
+fn merge_search<const XOR: bool>(
     small: &[u16],
     large: &[u16],
     out: &mut [MaybeUninit<u16>],
@@ -396,11 +392,7 @@ pub(crate) unsafe fn intersect<L: Lanes>(
 
 /// Block-wise `pcmpistrm` intersection; both inputs non-empty.
 #[inline(always)]
-pub(crate) unsafe fn intersect_blocks<L: Lanes>(
-    a: &[u16],
-    b: &[u16],
-    out: &mut [MaybeUninit<u16>],
-) -> usize {
+unsafe fn intersect_blocks<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     let (mut a, mut b) = (a, b);
     let mut k = 0;
     if strip_zero(&mut a, &mut b) {
@@ -540,11 +532,7 @@ pub(crate) unsafe fn difference<L: Lanes>(
 
 /// Block-wise `pcmpistrm` difference; both inputs non-empty.
 #[inline(always)]
-pub(crate) unsafe fn difference_blocks<L: Lanes>(
-    a: &[u16],
-    b: &[u16],
-    out: &mut [MaybeUninit<u16>],
-) -> usize {
+unsafe fn difference_blocks<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     let (mut a, mut b) = (a, b);
     let mut k = 0;
     if a[0] == 0 && b[0] != 0 {
@@ -841,11 +829,7 @@ pub(crate) unsafe fn union<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUnini
 
 /// Merge network union; both inputs at least eight long.
 #[inline(always)]
-pub(crate) unsafe fn union_blocks<L: Lanes>(
-    a: &[u16],
-    b: &[u16],
-    out: &mut [MaybeUninit<u16>],
-) -> usize {
+unsafe fn union_blocks<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     unsafe {
         let (cap, dst) = (out.len(), out.as_mut_ptr().cast::<u16>());
         let mut k = 0;
@@ -882,11 +866,7 @@ pub(crate) unsafe fn xor<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<
 
 /// Merge network symmetric difference; both inputs at least eight long.
 #[inline(always)]
-pub(crate) unsafe fn xor_blocks<L: Lanes>(
-    a: &[u16],
-    b: &[u16],
-    out: &mut [MaybeUninit<u16>],
-) -> usize {
+unsafe fn xor_blocks<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     unsafe {
         let (cap, dst) = (out.len(), out.as_mut_ptr().cast::<u16>());
         let mut k = 0;
