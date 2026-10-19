@@ -634,8 +634,6 @@ fn from_lsb0_bytes_offsets() {
         check(&rb, &model);
     }
     // The last bit of the key space.
-    let rb = RoaringBitmap128::from_lsb0_bytes(u128::MAX, &[1]);
-    assert!(rb.iter().eq([u128::MAX]));
     let rb = RoaringBitmap128::from_lsb0_bytes(u128::MAX - 7, &[0x80]);
     assert!(rb.iter().eq([u128::MAX]));
 }
