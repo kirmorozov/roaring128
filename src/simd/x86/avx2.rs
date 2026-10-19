@@ -21,6 +21,7 @@ use core::arch::x86_64::*;
 use core::mem::MaybeUninit;
 
 use super::arrays::{self, Lanes};
+use super::decode_sparse_words;
 use super::tables::{BIT_INDICES, PACK16};
 use crate::simd::scalar::{self, AND, ANDNOT, OR, XOR, with_op};
 use crate::simd::{BITMAP_WORDS, BitOp, Words};
@@ -219,10 +220,10 @@ unsafe fn any_block(a: &Words, b: &Words, test: impl Fn(__m256i, __m256i) -> __m
 // ---------------------------------------------------------------------------------------------
 
 /// Words per density decision of `bitmap_to_array`.
-const DECODE_BLOCK: usize = 16;
+const DECODE_BLOCK: usize = 64;
 /// Blocks with at most this many bits (5.5 per word) are decoded one bit at a time: below that
 /// density the plain loop is as fast as any vector decoder.
-const SPARSE_BLOCK: u32 = 88;
+const SPARSE_BLOCK: u32 = 11 * DECODE_BLOCK as u32 / 2;
 /// Blocks with at most this many bits (7 per word) use the unrolled `tzcnt` decoder; denser
 /// blocks use the byte table.
 const MEDIUM_BLOCK: u32 = 7 * DECODE_BLOCK as u32;
@@ -344,32 +345,26 @@ kernels! {
     }
 
     fn bitmap_to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
+        if out.len() <= BITMAP_WORDS {
+            // At most one value per word on average (`out` bounds the cardinality): a single
+            // pass of the sparse loop, without per-block decisions.
+            return decode_sparse_words(a, 0, out, 0);
+        }
         let len = out.len();
         let dst = out.as_mut_ptr().cast::<u16>();
         let mut written = 0usize;
         let mut wi = 0;
         // The decoder is chosen per block of words from the block's density, estimated from
-        // four of its sixteen words: cheap next to the sparse loop, resolved early by the
-        // branch predictor and stable on uniform data. (Using the previous block's exact
-        // output count instead makes a mispredicted choice resolve only after the previous
-        // block is done, which costs far more.)
+        // eight of its 64 words: cheap next to the sparse loop, resolved early by the branch
+        // predictor and stable on uniform data. (Using the previous block's exact output count
+        // instead makes a mispredicted choice resolve only after the previous block is done,
+        // which costs far more.)
         'blocks: while wi < BITMAP_WORDS {
             let block = &a[wi..wi + DECODE_BLOCK];
-            let card = 4 * (block[0].count_ones()
-                + block[5].count_ones()
-                + block[10].count_ones()
-                + block[15].count_ones());
+            let card = 8 * (0..8).map(|i| block[9 * i].count_ones()).sum::<u32>();
             if card <= SPARSE_BLOCK {
                 // Few bits per word: one `tzcnt` per value, exact stores.
-                for (t, &w) in block.iter().enumerate() {
-                    let base = ((wi + t) * 64) as u32;
-                    let mut w = w;
-                    while w != 0 {
-                        out[written].write((base + w.trailing_zeros()) as u16);
-                        written += 1;
-                        w &= w - 1;
-                    }
-                }
+                written = decode_sparse_words(block, wi, out, written);
             } else {
                 for (t, &w) in block.iter().enumerate() {
                     // A word writes at most 64 lanes past `written` (the last 8-lane store of

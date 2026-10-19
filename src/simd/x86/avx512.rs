@@ -19,6 +19,7 @@ use core::arch::x86_64::*;
 use core::mem::MaybeUninit;
 
 use super::arrays::{self, Lanes};
+use super::decode_sparse_words;
 use crate::simd::scalar::{AND, ANDNOT, OR, XOR, with_op};
 use crate::simd::{BITMAP_WORDS, BitOp, Words};
 
@@ -155,7 +156,7 @@ unsafe fn any_block<const IMM: i32>(a: &Words, b: &Words) -> bool {
 }
 
 /// Words per density decision of `bitmap_to_array`.
-const DECODE_BLOCK: usize = 16;
+const DECODE_BLOCK: usize = 64;
 /// Blocks with at most this many bits (one per word) are decoded one bit at a time.
 const SPARSE_BLOCK: u32 = DECODE_BLOCK as u32;
 
@@ -243,6 +244,11 @@ kernels! {
     }
 
     fn bitmap_to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
+        if out.len() <= BITMAP_WORDS {
+            // At most one value per word on average (`out` bounds the cardinality): a single
+            // pass of the sparse loop, without per-block decisions.
+            return decode_sparse_words(a, 0, out, 0);
+        }
         let len = out.len();
         let dst = out.as_mut_ptr().cast::<i16>();
         let iota = _mm512_set_epi16(
@@ -254,22 +260,11 @@ kernels! {
         let mut wi = 0;
         while wi < BITMAP_WORDS {
             let block = &a[wi..wi + DECODE_BLOCK];
-            // Density estimated from four of the sixteen words (see the AVX2 decoder).
-            let card = 4 * (block[0].count_ones()
-                + block[5].count_ones()
-                + block[10].count_ones()
-                + block[15].count_ones());
+            // Density estimated from eight of the 64 words (see the AVX2 decoder).
+            let card = 8 * (0..8).map(|i| block[9 * i].count_ones()).sum::<u32>();
             if card <= SPARSE_BLOCK {
                 // At most one bit per word on average: one `tzcnt` per value.
-                for (t, &w) in block.iter().enumerate() {
-                    let base = ((wi + t) * 64) as u32;
-                    let mut w = w;
-                    while w != 0 {
-                        out[written].write((base + w.trailing_zeros()) as u16);
-                        written += 1;
-                        w &= w - 1;
-                    }
-                }
+                written = decode_sparse_words(block, wi, out, written);
             } else {
                 let mut lo_idx = _mm512_add_epi16(iota, _mm512_set1_epi16((wi * 64) as i16));
                 for &w in block {
