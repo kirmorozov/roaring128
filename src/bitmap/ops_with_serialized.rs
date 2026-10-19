@@ -42,6 +42,9 @@ impl RoaringBitmap128 {
     {
         let mut reader = other;
         let header = read_header(&mut reader)?;
+        if self.is_empty() || header.count == 0 {
+            return Ok(RoaringBitmap128::new());
+        }
         let run_bitset_len = header.run_bitset_len()?;
         let run_bitset = read_bytes(&mut reader, run_bitset_len)?;
         let count = header.count;
@@ -71,6 +74,9 @@ impl RoaringBitmap128 {
             read += take as u64;
         }
 
+        if matches.is_empty() {
+            return Ok(RoaringBitmap128::new());
+        }
         // Stream positions relative to the start of the serialized bitmap.
         let too_large = || invalid_data("serialized bitmap is too large");
         let payloads_start = count
