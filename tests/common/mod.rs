@@ -706,17 +706,27 @@ fn interval_len() -> impl Strategy<Value = u32> + Clone {
 
 /// One piece of a structured set.
 pub fn piece() -> impl Strategy<Value = Piece> + Clone {
+    piece_with(anchor(), any::<u128>())
+}
+
+/// One piece of a structured set with the given anchors and sparse values (used to restrict
+/// sets to the `u32` / `u64` domains for the differential tests).
+pub fn piece_with<A, S>(anchor: A, sparse: S) -> impl Strategy<Value = Piece> + Clone
+where
+    A: Strategy<Value = u128> + Clone + 'static,
+    S: Strategy<Value = u128> + Clone + 'static,
+{
     prop_oneof![
-        4 => (anchor(), vec(0..4 * KEY as u32, 1..=64))
+        4 => (anchor.clone(), vec(0..4 * KEY as u32, 1..=64))
             .prop_map(|(anchor, offsets)| Piece::Points { anchor, offsets }),
-        2 => (anchor(), 0..4u8, dense_words())
+        2 => (anchor.clone(), 0..4u8, dense_words())
             .prop_map(|(anchor, key, words)| Piece::Dense { anchor, key, words }),
-        3 => (anchor(), 0..4 * KEY as u32, interval_len())
+        3 => (anchor.clone(), 0..4 * KEY as u32, interval_len())
             .prop_map(|(anchor, start, len)| Piece::Interval { anchor, start, len }),
-        1 => (anchor(), 0..4 * KEY as u32, 2..=5u8, 1..=20_000u16)
+        1 => (anchor.clone(), 0..4 * KEY as u32, 2..=5u8, 1..=20_000u16)
             .prop_map(|(anchor, start, stride, count)| Piece::Strided { anchor, start, stride, count }),
-        2 => vec(any::<u128>(), 1..=32).prop_map(|values| Piece::Sparse { values }),
-        1 => (anchor(), 0..4u8, 4090..=4100u16)
+        2 => vec(sparse, 1..=32).prop_map(|values| Piece::Sparse { values }),
+        1 => (anchor, 0..4u8, 4090..=4100u16)
             .prop_map(|(anchor, key, n)| Piece::Boundary { anchor, key, n }),
     ]
 }
