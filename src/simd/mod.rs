@@ -170,7 +170,16 @@ macro_rules! dispatch {
         $(#[$meta])*
         #[inline]
         $vis fn $name($($arg: $ty),*) $(-> $ret)? {
-            $name_on(backend(), $($arg),*)
+            // Miri cannot execute vendor intrinsics; it checks the memory safety of the
+            // container code against the reference kernels instead. Never used in real builds.
+            #[cfg(miri)]
+            {
+                scalar::$name($($arg),*)
+            }
+            #[cfg(not(miri))]
+            {
+                $name_on(backend(), $($arg),*)
+            }
         }
 
         #[inline(always)]
