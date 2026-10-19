@@ -77,21 +77,11 @@ pub(crate) fn prefer_point_inserts(new_keys: usize, existing: usize) -> bool {
 }
 
 impl RoaringBitmap128 {
-    /// Builds a bitmap from strictly increasing keys with non-empty containers.
+    /// Builds a bitmap from strictly increasing keys with non-empty containers and their total
+    /// cardinality.
     ///
     /// `BTreeMap::from_iter` sorts its input with a stable sort (linear on sorted input) and then
     /// bulk-builds a densely packed tree in linear time.
-    pub(crate) fn from_sorted_entries(entries: Vec<(u128, Container)>) -> RoaringBitmap128 {
-        debug_assert!(entries.windows(2).all(|w| w[0].0 < w[1].0));
-        debug_assert!(entries.iter().all(|(_, c)| !c.is_empty()));
-        let len = entries.iter().map(|(_, c)| c.len()).sum();
-        RoaringBitmap128 {
-            map: BTreeMap::from_iter(entries),
-            len,
-        }
-    }
-
-    /// Like [`Self::from_sorted_entries`] with an already known cardinality.
     pub(crate) fn from_sorted_entries_with_len(
         entries: Vec<(u128, Container)>,
         len: u64,

@@ -591,21 +591,22 @@ impl<M: Middle> Core<M> {
             if let Some(first) = self.middle.first_key() {
                 if first == next_key {
                     self.pull_front();
-                    if let Some((_, it)) = &mut self.front {
-                        if it.peek() == Some(0) {
-                            let next = it.next_range().expect("peeked a value");
-                            end = join(next_key, *next.end());
-                            continue;
-                        }
+                    if let Some((_, it)) = &mut self.front
+                        && it.peek() == Some(0)
+                    {
+                        let next = it.next_range().expect("peeked a value");
+                        end = join(next_key, *next.end());
+                        continue;
                     }
                 }
                 break;
             }
-            if let Some((back_key, it)) = &mut self.back {
-                if *back_key == next_key && it.peek() == Some(0) {
-                    let next = it.next_range().expect("peeked a value");
-                    end = join(next_key, *next.end());
-                }
+            if let Some((back_key, it)) = &mut self.back
+                && *back_key == next_key
+                && it.peek() == Some(0)
+            {
+                let next = it.next_range().expect("peeked a value");
+                end = join(next_key, *next.end());
             }
             break;
         }
@@ -635,21 +636,22 @@ impl<M: Middle> Core<M> {
             if let Some(last) = self.middle.last_key() {
                 if last == prev_key {
                     self.pull_back();
-                    if let Some((_, it)) = &mut self.back {
-                        if it.peek_back() == Some(u16::MAX) {
-                            let prev = it.next_range_back().expect("peeked a value");
-                            start = join(prev_key, *prev.start());
-                            continue;
-                        }
+                    if let Some((_, it)) = &mut self.back
+                        && it.peek_back() == Some(u16::MAX)
+                    {
+                        let prev = it.next_range_back().expect("peeked a value");
+                        start = join(prev_key, *prev.start());
+                        continue;
                     }
                 }
                 break;
             }
-            if let Some((front_key, it)) = &mut self.front {
-                if *front_key == prev_key && it.peek_back() == Some(u16::MAX) {
-                    let prev = it.next_range_back().expect("peeked a value");
-                    start = join(prev_key, *prev.start());
-                }
+            if let Some((front_key, it)) = &mut self.front
+                && *front_key == prev_key
+                && it.peek_back() == Some(u16::MAX)
+            {
+                let prev = it.next_range_back().expect("peeked a value");
+                start = join(prev_key, *prev.start());
             }
             break;
         }
