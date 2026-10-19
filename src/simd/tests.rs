@@ -627,6 +627,14 @@ fn bitmap_to_array_random_tails() {
             cases.push(w);
         }
     }
+    // Uniform densities around the decoder switch points (4 and 8 bits per word).
+    for card in [3000usize, 4096, 4500, 6000, 8192, 9000, 12000] {
+        let mut w = [0u64; BITMAP_WORDS];
+        for v in exact_array(&mut rng, card, 0, u16::MAX) {
+            w[v as usize / 64] |= 1 << (v % 64);
+        }
+        cases.push(w);
+    }
     for dense_words in [1usize, 2, 3, 15] {
         let mut w = [0u64; BITMAP_WORDS];
         for x in w[BITMAP_WORDS - dense_words..].iter_mut() {

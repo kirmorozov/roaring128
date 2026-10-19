@@ -138,6 +138,11 @@ unsafe fn any_block<const IMM: i32>(a: &Words, b: &Words) -> bool {
     }
 }
 
+/// Words per density decision of `bitmap_to_array`.
+const DECODE_BLOCK: usize = 16;
+/// Blocks with at most this many bits (one per word) are decoded one bit at a time.
+const SPARSE_BLOCK: u32 = DECODE_BLOCK as u32;
+
 /// `vpternlogq` truth tables with operands (A, B, C) = (acc, a, b).
 const ACC_OR_AND: i32 = 0xF8; // A | (B & C)
 const ACC_OR_ANDNOT: i32 = 0xF4; // A | (B & !C)
@@ -228,33 +233,48 @@ kernels! {
             31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11,
             10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
         );
-        let step = _mm512_set1_epi16(32);
-        let mut lo_idx = iota;
+        let half = _mm512_set1_epi16(32);
         let mut written = 0usize;
-        for &w in a.iter() {
-            if w != 0 {
-                let (lo, hi) = (w as u32, (w >> 32) as u32);
-                let hi_idx = _mm512_add_epi16(lo_idx, step);
-                let vlo = _mm512_maskz_compress_epi16(lo, lo_idx);
-                let vhi = _mm512_maskz_compress_epi16(hi, hi_idx);
-                let (nlo, nhi) = (lo.count_ones(), hi.count_ones());
-                unsafe {
-                    if len - written >= 64 {
-                        _mm512_storeu_si512(dst.add(written).cast(), vlo);
-                        _mm512_storeu_si512(dst.add(written + nlo as usize).cast(), vhi);
-                    } else {
-                        // `out` holds the remaining values: masked stores stay in bounds.
-                        _mm512_mask_storeu_epi16(dst.add(written), low_bits32(nlo), vlo);
-                        _mm512_mask_storeu_epi16(
-                            dst.add(written + nlo as usize),
-                            low_bits32(nhi),
-                            vhi,
-                        );
+        let mut wi = 0;
+        while wi < BITMAP_WORDS {
+            let block = &a[wi..wi + DECODE_BLOCK];
+            let card: u32 = block.iter().map(|w| w.count_ones()).sum();
+            if card <= SPARSE_BLOCK {
+                // At most one bit per word on average: one `tzcnt` per value.
+                for (t, &w) in block.iter().enumerate() {
+                    let base = ((wi + t) * 64) as u32;
+                    let mut w = w;
+                    while w != 0 {
+                        out[written].write((base + w.trailing_zeros()) as u16);
+                        written += 1;
+                        w &= w - 1;
                     }
                 }
-                written += (nlo + nhi) as usize;
+            } else {
+                let mut lo_idx = _mm512_add_epi16(iota, _mm512_set1_epi16((wi * 64) as i16));
+                for &w in block {
+                    // Branch free: every word costs two compresses whatever its density.
+                    let (lo, hi) = (w as u32, (w >> 32) as u32);
+                    let hi_idx = _mm512_add_epi16(lo_idx, half);
+                    let vlo = _mm512_maskz_compress_epi16(lo, lo_idx);
+                    let vhi = _mm512_maskz_compress_epi16(hi, hi_idx);
+                    let (nlo, nhi) = (lo.count_ones() as usize, hi.count_ones() as usize);
+                    unsafe {
+                        if len - written >= 64 {
+                            _mm512_storeu_si512(dst.add(written).cast(), vlo);
+                            _mm512_storeu_si512(dst.add(written + nlo).cast(), vhi);
+                        } else {
+                            // `out` holds exactly the remaining values: masked stores.
+                            let (mlo, mhi) = (low_bits32(nlo as u32), low_bits32(nhi as u32));
+                            _mm512_mask_storeu_epi16(dst.add(written), mlo, vlo);
+                            _mm512_mask_storeu_epi16(dst.add(written + nlo), mhi, vhi);
+                        }
+                    }
+                    written += nlo + nhi;
+                    lo_idx = _mm512_add_epi16(hi_idx, half);
+                }
             }
-            lo_idx = _mm512_add_epi16(lo_idx, _mm512_add_epi16(step, step));
+            wi += DECODE_BLOCK;
         }
         written
     }

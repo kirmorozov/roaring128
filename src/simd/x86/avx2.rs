@@ -196,6 +196,57 @@ unsafe fn any_block(a: &Words, b: &Words, test: impl Fn(__m256i, __m256i) -> __m
 }
 
 // ---------------------------------------------------------------------------------------------
+// Bitmap decoding
+// ---------------------------------------------------------------------------------------------
+
+/// Words per density decision of `bitmap_to_array`.
+const DECODE_BLOCK: usize = 16;
+/// Blocks with at most this many bits (4 per word) are decoded one bit at a time.
+const SPARSE_BLOCK: u32 = 4 * DECODE_BLOCK as u32;
+/// Blocks with at most this many bits (8 per word) use the unrolled `tzcnt` decoder; denser
+/// blocks use the byte table.
+const MEDIUM_BLOCK: u32 = 8 * DECODE_BLOCK as u32;
+
+/// Writes the set bit indices of `w` plus `base` to `dst`: eight values with a fixed unrolled
+/// sequence (values past the popcount are scratch), then a loop for the rest. Writes
+/// `max(8, popcount)` lanes.
+#[inline(always)]
+unsafe fn decode_word_unrolled(w: u64, base: u32, dst: *mut u16) {
+    unsafe {
+        let mut x = w;
+        for k in 0..8 {
+            *dst.add(k) = (base + _tzcnt_u64(x) as u32) as u16;
+            x = _blsr_u64(x);
+        }
+        let mut k = 8;
+        while x != 0 {
+            *dst.add(k) = (base + _tzcnt_u64(x) as u32) as u16;
+            x = _blsr_u64(x);
+            k += 1;
+        }
+    }
+}
+
+/// Writes the set bit indices of `w` plus `base` to `dst`, one byte at a time from the index
+/// table (eight lanes stored per byte, at most 64 lanes in total).
+#[inline(always)]
+unsafe fn decode_word_table(w: u64, base: u32, dst: *mut u16) {
+    unsafe {
+        let table = &BIT_INDICES.0;
+        let mut pos = 0;
+        let mut vbase = _mm_set1_epi16(base as i16);
+        let step = _mm_set1_epi16(8);
+        for byte in w.to_le_bytes() {
+            let idx = _mm_loadl_epi64(table.get_unchecked(byte as usize).as_ptr().cast());
+            let v = _mm_add_epi16(_mm_cvtepu8_epi16(idx), vbase);
+            _mm_storeu_si128(dst.add(pos).cast(), v);
+            pos += byte.count_ones() as usize;
+            vbase = _mm_add_epi16(vbase, step);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Array lane primitives
 // ---------------------------------------------------------------------------------------------
 
@@ -260,43 +311,45 @@ kernels! {
     fn bitmap_to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
         let len = out.len();
         let dst = out.as_mut_ptr().cast::<u16>();
-        let table = &BIT_INDICES.0;
         let mut written = 0usize;
         let mut wi = 0;
-        while wi < BITMAP_WORDS {
-            let w = a[wi];
-            if w != 0 {
-                // A word writes at most 64 lanes (the last 8-lane store ends at most 64 lanes
-                // after the start); close to the end of `out` the scalar tail takes over.
-                if len - written < 64 {
-                    break;
-                }
-                let count = w.count_ones() as usize;
-                let base = (wi * 64) as u32;
-                unsafe {
-                    if count <= 8 {
-                        // Sparse word: unrolled extraction, lanes past `count` are scratch.
-                        let mut w = w;
-                        for t in 0..8 {
-                            *dst.add(written + t) = (base + w.trailing_zeros()) as u16;
-                            w &= w.wrapping_sub(1);
-                        }
-                    } else {
-                        let mut pos = written;
-                        let mut vbase = _mm_set1_epi16(base as i16);
-                        let step = _mm_set1_epi16(8);
-                        for byte in w.to_le_bytes() {
-                            let idx = _mm_loadl_epi64(table.get_unchecked(byte as usize).as_ptr().cast());
-                            let v = _mm_add_epi16(_mm_cvtepu8_epi16(idx), vbase);
-                            _mm_storeu_si128(dst.add(pos).cast(), v);
-                            pos += byte.count_ones() as usize;
-                            vbase = _mm_add_epi16(vbase, step);
-                        }
+        // The decoder is chosen per block of words from the block's density, which keeps the
+        // choice predictable for the branch predictor.
+        'blocks: while wi < BITMAP_WORDS {
+            let block = &a[wi..wi + DECODE_BLOCK];
+            let card: u32 = block.iter().map(|w| w.count_ones()).sum();
+            if card <= SPARSE_BLOCK {
+                // Few bits per word: one `tzcnt` per value, exact stores.
+                for (t, &w) in block.iter().enumerate() {
+                    let base = ((wi + t) * 64) as u32;
+                    let mut w = w;
+                    while w != 0 {
+                        out[written].write((base + w.trailing_zeros()) as u16);
+                        written += 1;
+                        w &= w - 1;
                     }
                 }
-                written += count;
+            } else {
+                for (t, &w) in block.iter().enumerate() {
+                    // A word writes at most 64 lanes past `written` (the last 8-lane store of
+                    // the table decoder starts at most 56 lanes in); near the end of `out` the
+                    // scalar tail takes over.
+                    if len - written < 64 {
+                        wi += t;
+                        break 'blocks;
+                    }
+                    let base = ((wi + t) * 64) as u32;
+                    unsafe {
+                        if card <= MEDIUM_BLOCK {
+                            decode_word_unrolled(w, base, dst.add(written));
+                        } else {
+                            decode_word_table(w, base, dst.add(written));
+                        }
+                    }
+                    written += w.count_ones() as usize;
+                }
             }
-            wi += 1;
+            wi += DECODE_BLOCK;
         }
         scalar::bitmap_to_array_from(a, wi, out, written)
     }
