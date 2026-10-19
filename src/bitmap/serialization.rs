@@ -106,13 +106,39 @@ pub(crate) fn payload_size(low: u16, is_run: bool) -> usize {
     }
 }
 
+/// How the bitmap store constructors take their words: `&Words` (copied into the store's own
+/// aligned block) or an owned `Box<Words>`. Lets this module build against either form of the
+/// container constructors.
+trait WordsArg<'a> {
+    fn from_words(words: &'a Words) -> Self;
+}
+
+impl<'a> WordsArg<'a> for &'a Words {
+    #[inline]
+    fn from_words(words: &'a Words) -> Self {
+        words
+    }
+}
+
+impl<'a> WordsArg<'a> for Box<Words> {
+    #[inline]
+    fn from_words(words: &'a Words) -> Self {
+        Box::new(*words)
+    }
+}
+
+#[inline]
+fn with_words<'a, A: WordsArg<'a>, R>(f: fn(u64, A) -> R, len: u64, words: &'a Words) -> R {
+    f(len, A::from_words(words))
+}
+
 /// Builds a bitmap store from words read from the input.
 #[inline]
 fn bitmap_store(len: u64, words: &Words, validate: bool) -> Result<BitmapStore, &'static str> {
     if validate {
-        BitmapStore::try_from_words(len, Box::new(*words))
+        with_words(BitmapStore::try_from_words, len, words)
     } else {
-        Ok(BitmapStore::from_words_unchecked(len, Box::new(*words)))
+        Ok(with_words(BitmapStore::from_words_unchecked, len, words))
     }
 }
 
