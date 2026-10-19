@@ -4,6 +4,7 @@
 //! kernel that writes past its bound corrupts the guard and fails the test.
 
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::mem::MaybeUninit;
 
 use super::*;
@@ -868,6 +869,51 @@ fn bitmap_kernels_random_cases() {
     }
 }
 
+/// Constructed tails: a side whose last (partial) block holds outliers while the other side goes
+/// on, values around the top of the range (where vector code may reserve padding values), and
+/// long stretches between the values of a short side.
+#[test]
+fn array_kernels_constructed_tails() {
+    let mut rng = Rng(0x5EED_0108);
+    let mut cases: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    for head in [8usize, 9, 15, 16, 17, 24] {
+        for outliers in [
+            &[60000u16][..],
+            &[30000, 60000],
+            &[65527],
+            &[65528],
+            &[65535],
+        ] {
+            let mut a: Vec<u16> = (0..head as u16).map(|x| x * 3).collect();
+            a.extend_from_slice(outliers);
+            for (lo, len) in [(0u16, 40usize), (10, 400), (100, 4000), (0, 64)] {
+                let b: Vec<u16> = (lo..).step_by(7).take(len).collect();
+                cases.push((a.clone(), b));
+            }
+        }
+    }
+    for top in [8usize, 9, 16, 30] {
+        let a: Vec<u16> = (u16::MAX - top as u16 + 1..=u16::MAX).collect();
+        let b = exact_array(&mut rng, 40, u16::MAX - 100, u16::MAX);
+        let c = exact_array(&mut rng, 400, 0, u16::MAX);
+        cases.push((a.clone(), b));
+        cases.push((a, c));
+    }
+    for gap in [1u16, 31, 32, 33, 127, 128, 129, 200, 5000] {
+        let small: Vec<u16> = (0..8u16).map(|x| x * gap).collect();
+        let large = exact_array(&mut rng, 4096, 0, u16::MAX);
+        let dense: Vec<u16> = (0..=u16::MAX).filter(|x| x % 3 != 0).collect();
+        cases.push((small.clone(), large));
+        cases.push((small, dense));
+    }
+    for backend in backends() {
+        for (a, b) in &cases {
+            check_array_pair(backend, a, b);
+            check_array_pair(backend, b, a);
+        }
+    }
+}
+
 /// Early-exit kernels must look at every position: a single bit anywhere decides.
 #[test]
 fn bitmap_early_exit_every_word() {
@@ -1001,6 +1047,11 @@ fn kernel_timings() {
     ];
     let mut words = [0u64; BITMAP_WORDS];
     let mut out = vec![MaybeUninit::new(0u16); 65536];
+    // 16 inputs per density, cycled through: a single repeated input lets the branch predictors
+    // learn it, which flatters branchy decoders.
+    let mut cycle_rng = Rng(0x5EED_0109);
+    let sparse_set: Vec<Words> = (0..16).map(|_| random_bitmap(&mut cycle_rng, 10)).collect();
+    let medium_set: Vec<Words> = (0..16).map(|_| random_bitmap(&mut cycle_rng, 62)).collect();
 
     for backend in backends() {
         for (name, a) in [
@@ -1017,6 +1068,17 @@ fn kernel_timings() {
             });
             time(&format!("bitmap_count_runs {name}"), backend, || {
                 call!(backend, bitmap_count_runs, bitmap_count_runs_on(a)) as usize
+            });
+        }
+        for (name, set) in [("1% x16", &sparse_set), ("6% x16", &medium_set)] {
+            let mut next = 0;
+            time(&format!("bitmap_to_array {name}"), backend, || {
+                next = (next + 1) % set.len();
+                call!(
+                    backend,
+                    bitmap_to_array,
+                    bitmap_to_array_on(&set[next], &mut out)
+                )
             });
         }
         time("bitmap_op and", backend, || {

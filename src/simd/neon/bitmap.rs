@@ -259,9 +259,10 @@ pub(super) fn count_runs(a: &Words) -> u32 {
 /// whatever the density; the bit loop about 7 per set bit plus 2 per word.
 const DENSE_CHUNK_BITS: usize = 40;
 
-/// Output room that lets a chunk be decoded without counting its bits first: 512 values plus the
-/// 8-lane overhang of the table path.
-const CHUNK_ROOM: usize = CHUNK_WORDS * 64 + 8;
+/// Output room that lets a chunk be decoded without counting its bits first. The table path
+/// stores 8 lanes per byte after the values of the bytes before it, so it ends at most
+/// `min(n + 8, 512)` values after the start of the chunk (`n` set bits).
+const CHUNK_ROOM: usize = CHUNK_WORDS * 64;
 
 #[inline]
 #[target_feature(enable = "neon")]
@@ -284,7 +285,7 @@ pub(super) fn to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
         };
         let dst = out.as_mut_ptr().cast::<u16>();
         k = if use_table {
-            // SAFETY: the table path writes up to `k + n + 8 <= cap` (`n <= 512`).
+            // SAFETY: the table path writes up to `k + min(n + 8, 512) <= cap`.
             unsafe { decode_dense(words, base, dst, k) }
         } else {
             // SAFETY: exactly `n <= cap - k` values are written.
@@ -301,7 +302,8 @@ pub(super) fn to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize {
 /// popcount lanes are kept) and advances by its popcount. Branch-free.
 ///
 /// # Safety
-/// `dst[k..k + n + 8]` must be valid for writes, `n` being the number of set bits of the chunk.
+/// `dst[k..k + min(n + 8, 512)]` must be valid for writes, `n` being the number of set bits of
+/// the chunk.
 #[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_dense(words: &[u64; CHUNK_WORDS], base: u16, dst: *mut u16, k: usize) -> usize {
@@ -314,8 +316,8 @@ unsafe fn decode_dense(words: &[u64; CHUNK_WORDS], base: u16, dst: *mut u16, k: 
     for &w in words {
         for byte in 0..8 {
             let b = (w >> (8 * byte)) as u8 as usize;
-            // SAFETY: the table entry has 8 bytes; the stores end before `k + n + 8` as
-            // guaranteed by the caller.
+            // SAFETY: the table entry has 8 bytes; this store ends 8 values after the values of
+            // the previous bytes, so before `k + min(n + 8, 512)` as guaranteed by the caller.
             unsafe {
                 let pos = vld1_u8(BIT_POSITIONS.0[b].as_ptr());
                 vst1q_u16(dst.add(offset).cast(), vaddw_u8(base, pos));
