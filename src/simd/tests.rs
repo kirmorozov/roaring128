@@ -249,13 +249,14 @@ fn check_array_pair(backend: Impl, a: &[u16], b: &[u16]) {
 
 fn bitmap_cases() -> Vec<Words> {
     let mut rng = Rng(0x5EED_0002);
-    let mut cases: Vec<Words> = Vec::new();
-    cases.push([0; BITMAP_WORDS]);
-    cases.push([u64::MAX; BITMAP_WORDS]);
-    cases.push([0xAAAA_AAAA_AAAA_AAAA; BITMAP_WORDS]);
-    cases.push([0x5555_5555_5555_5555; BITMAP_WORDS]);
-    cases.push([1; BITMAP_WORDS]);
-    cases.push([1 << 63; BITMAP_WORDS]);
+    let mut cases: Vec<Words> = vec![
+        [0; BITMAP_WORDS],
+        [u64::MAX; BITMAP_WORDS],
+        [0xAAAA_AAAA_AAAA_AAAA; BITMAP_WORDS],
+        [0x5555_5555_5555_5555; BITMAP_WORDS],
+        [1; BITMAP_WORDS],
+        [1 << 63; BITMAP_WORDS],
+    ];
     let mut edges = [0u64; BITMAP_WORDS];
     edges[0] = 1;
     edges[BITMAP_WORDS - 1] = 1 << 63;
@@ -463,8 +464,14 @@ fn expected_backend_is_selected() {
             ("avx512bw", std::is_x86_feature_detected!("avx512bw")),
             ("avx512vl", std::is_x86_feature_detected!("avx512vl")),
             ("avx512dq", std::is_x86_feature_detected!("avx512dq")),
-            ("avx512vpopcntdq", std::is_x86_feature_detected!("avx512vpopcntdq")),
-            ("avx512bitalg", std::is_x86_feature_detected!("avx512bitalg")),
+            (
+                "avx512vpopcntdq",
+                std::is_x86_feature_detected!("avx512vpopcntdq"),
+            ),
+            (
+                "avx512bitalg",
+                std::is_x86_feature_detected!("avx512bitalg"),
+            ),
             ("avx512vbmi2", std::is_x86_feature_detected!("avx512vbmi2")),
         ] {
             std::eprintln!("cpu feature {name:<16} {detected}");
@@ -727,7 +734,14 @@ mod guard_pages {
             unsafe {
                 let base = syscall6(
                     SYS.0,
-                    [0, 3 * UNIT, PROT_READ_WRITE, MAP_PRIVATE_ANONYMOUS, usize::MAX, 0],
+                    [
+                        0,
+                        3 * UNIT,
+                        PROT_READ_WRITE,
+                        MAP_PRIVATE_ANONYMOUS,
+                        usize::MAX,
+                        0,
+                    ],
                 );
                 assert!(base > 0, "mmap failed: {base}");
                 let base = base as *mut u8;
@@ -992,7 +1006,11 @@ fn kernel_timings() {
         w
     };
 
-    bench_row!("bitmap_popcount", bitmap_popcount, bitmap_popcount_on(&dense_a));
+    bench_row!(
+        "bitmap_popcount",
+        bitmap_popcount,
+        bitmap_popcount_on(&dense_a)
+    );
     bench_row!(
         "bitmap_op And (with card)",
         bitmap_op,
@@ -1033,7 +1051,11 @@ fn kernel_timings() {
         bitmap_to_array,
         bitmap_to_array_on(&sparse, &mut out)
     );
-    bench_row!("bitmap_count_runs dense", bitmap_count_runs, bitmap_count_runs_on(&dense_a));
+    bench_row!(
+        "bitmap_count_runs dense",
+        bitmap_count_runs,
+        bitmap_count_runs_on(&dense_a)
+    );
 
     let a1000 = exact_array(&mut rng, 1000, 0, 1999);
     let b1000 = exact_array(&mut rng, 1000, 0, 1999);

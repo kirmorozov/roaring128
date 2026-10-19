@@ -89,7 +89,8 @@ unsafe fn copy_lt8(src: *const u16, dst: *mut u16, n: usize) {
     unsafe {
         let mut o = 0;
         if n & 4 != 0 {
-            dst.cast::<u64>().write_unaligned(src.cast::<u64>().read_unaligned());
+            dst.cast::<u64>()
+                .write_unaligned(src.cast::<u64>().read_unaligned());
             o = 4;
         }
         if n & 2 != 0 {
@@ -212,8 +213,8 @@ fn search_each(small: &[u16], large: &[u16], mut f: impl FnMut(u16, usize) -> bo
         }
         return;
     }
-    let mut groups = small.chunks_exact(SEARCH_LANES);
-    for g in &mut groups {
+    let (groups, rest) = small.as_chunks::<SEARCH_LANES>();
+    for g in groups {
         let mut base = [0usize; SEARCH_LANES];
         let mut n = len;
         while n > 1 {
@@ -233,7 +234,7 @@ fn search_each(small: &[u16], large: &[u16], mut f: impl FnMut(u16, usize) -> bo
             }
         }
     }
-    for &v in groups.remainder() {
+    for &v in rest {
         if !f(v, lower_bound(large, v)) {
             return;
         }
@@ -248,7 +249,11 @@ fn found_at(s: &[u16], p: usize, v: u16) -> bool {
 
 /// Intersection of `small` with `large` by searches, written to `out[..]`.
 #[inline(always)]
-pub(super) fn intersect_search(small: &[u16], large: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
+pub(super) fn intersect_search(
+    small: &[u16],
+    large: &[u16],
+    out: &mut [MaybeUninit<u16>],
+) -> usize {
     debug_assert!(out.len() >= small.len());
     let mut k = 0;
     search_each(small, large, |v, p| {
@@ -759,11 +764,7 @@ unsafe fn pending<'a>(
 }
 
 #[inline(always)]
-pub(crate) unsafe fn union<L: Lanes>(
-    a: &[u16],
-    b: &[u16],
-    out: &mut [MaybeUninit<u16>],
-) -> usize {
+pub(crate) unsafe fn union<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize {
     check_out(out, a.len() + b.len());
     let (short, long) = by_len(a, b);
     if short.len() < 8 || search_wins(short, long, SEARCH_RATIO_MERGE) {
