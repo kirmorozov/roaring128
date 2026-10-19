@@ -341,12 +341,13 @@ mod serialization {
         bytes.extend_from_slice(&descriptor(1, 1));
         bytes.extend_from_slice(&9u16.to_le_bytes());
         bytes.extend_from_slice(&3u16.to_le_bytes());
-        assert_eq!(
-            RoaringBitmap128::deserialize_from(&bytes[..])
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
+        // Array order is checked by both readers (no debug assertion can fire).
+        assert_eq!(kind(&bytes), io::ErrorKind::InvalidData);
+        // Duplicate array values.
+        let mut bytes = header(COOKIE, 0, 1);
+        bytes.extend_from_slice(&descriptor(1, 1));
+        bytes.extend_from_slice(&[7, 0, 7, 0]);
+        assert_eq!(kind(&bytes), io::ErrorKind::InvalidData);
         // Bitmap with a wrong cardinality.
         let mut bytes = header(COOKIE, 0, 1);
         bytes.extend_from_slice(&descriptor(1, 5000));
@@ -357,6 +358,30 @@ mod serialization {
                 .kind(),
             io::ErrorKind::InvalidData
         );
+        // Unchecked: an invalid bitmap (the announced cardinality), no panic even in debug.
+        let rb = RoaringBitmap128::deserialize_unchecked_from(&bytes[..]).unwrap();
+        assert_eq!(rb.len(), 5001);
+        assert!(rb.internal_validate().is_err());
+        // The payloads read by the serialized intersection are validated.
+        let ours: RoaringBitmap128 = [join(1, 3)].into();
+        assert_eq!(
+            ours.intersection_with_serialized_unchecked(Cursor::new(&bytes))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        // A correct bitmap payload read in place, checked and unchecked.
+        let mut bytes = header(COOKIE, 0, 1);
+        bytes.extend_from_slice(&descriptor(MAX_KEY, 5119));
+        bytes.extend_from_slice(&[0xFF; 640]);
+        bytes.extend_from_slice(&[0x00; 8192 - 640]);
+        for rb in [
+            RoaringBitmap128::deserialize_from(&bytes[..]).unwrap(),
+            RoaringBitmap128::deserialize_unchecked_from(&bytes[..]).unwrap(),
+        ] {
+            rb.internal_validate().unwrap();
+            assert!(rb.iter().eq((0..5120u16).map(|i| join(MAX_KEY, i))));
+        }
         // Overlapping runs.
         let mut bytes = header(COOKIE, FLAG_RUN_BITSET, 1);
         bytes.push(1);
@@ -364,12 +389,15 @@ mod serialization {
         for v in [10u16, 5, 12, 1] {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        assert_eq!(
-            RoaringBitmap128::deserialize_from(&bytes[..])
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert_eq!(kind(&bytes), io::ErrorKind::InvalidData);
+        // Adjacent runs.
+        let mut bytes = header(COOKIE, FLAG_RUN_BITSET, 1);
+        bytes.push(1);
+        bytes.extend_from_slice(&descriptor(1, 1));
+        for v in [10u16, 5, 16, 1] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(kind(&bytes), io::ErrorKind::InvalidData);
         // Truncated payload.
         let mut bytes = header(COOKIE, 0, 1);
         bytes.extend_from_slice(&descriptor(1, 3));

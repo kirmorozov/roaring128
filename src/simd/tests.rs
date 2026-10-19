@@ -205,52 +205,21 @@ fn array_kernels_match_reference() {
     let cases = array_cases();
     for backend in backends() {
         for (a, b) in &cases {
-            let ctx = || format!("backend={} |a|={} |b|={}", backend.name(), a.len(), b.len());
-            let inter = naive_intersect(a, b);
-            let got = run_guarded(a.len().min(b.len()), |out| {
-                call!(backend, array_intersect, array_intersect_on(a, b, out))
-            });
-            assert_eq!(got, inter, "intersect {}", ctx());
-            assert_eq!(
-                call!(backend, array_intersect_card, array_intersect_card_on(a, b)),
-                inter.len(),
-                "intersect_card {}",
-                ctx()
-            );
-            assert_eq!(
-                call!(backend, array_intersects, array_intersects_on(a, b)),
-                !inter.is_empty(),
-                "intersects {}",
-                ctx()
-            );
-
-            let got = run_guarded(a.len() + b.len(), |out| {
-                call!(backend, array_union, array_union_on(a, b, out))
-            });
-            assert_eq!(got, naive_union(a, b), "union {}", ctx());
-
-            let got = run_guarded(a.len(), |out| {
-                call!(backend, array_difference, array_difference_on(a, b, out))
-            });
-            assert_eq!(got, naive_difference(a, b), "difference {}", ctx());
-
-            let got = run_guarded(a.len() + b.len(), |out| {
-                call!(backend, array_xor, array_xor_on(a, b, out))
-            });
-            assert_eq!(got, naive_xor(a, b), "xor {}", ctx());
+            check_array_pair(backend, a, b);
         }
     }
 }
 
 fn bitmap_cases() -> Vec<Words> {
     let mut rng = Rng(0x5EED_0002);
-    let mut cases: Vec<Words> = Vec::new();
-    cases.push([0; BITMAP_WORDS]);
-    cases.push([u64::MAX; BITMAP_WORDS]);
-    cases.push([0xAAAA_AAAA_AAAA_AAAA; BITMAP_WORDS]);
-    cases.push([0x5555_5555_5555_5555; BITMAP_WORDS]);
-    cases.push([1; BITMAP_WORDS]);
-    cases.push([1 << 63; BITMAP_WORDS]);
+    let mut cases: Vec<Words> = vec![
+        [0; BITMAP_WORDS],
+        [u64::MAX; BITMAP_WORDS],
+        [0xAAAA_AAAA_AAAA_AAAA; BITMAP_WORDS],
+        [0x5555_5555_5555_5555; BITMAP_WORDS],
+        [1; BITMAP_WORDS],
+        [1 << 63; BITMAP_WORDS],
+    ];
     let mut edges = [0u64; BITMAP_WORDS];
     edges[0] = 1;
     edges[BITMAP_WORDS - 1] = 1 << 63;
@@ -441,20 +410,51 @@ fn gallop_finds_lower_bound() {
 // Backend selection, randomized differential cases and timings (added with the NEON kernels).
 // ---------------------------------------------------------------------------------------------
 
-/// With `ROARING128_EXPECT_BACKEND` set (`scripts/test-aarch64.sh` sets it to `neon`), the
-/// selected backend must be that one, so emulated runs cannot silently test something else.
+/// With `ROARING128_EXPECT_BACKEND=<name>` (`scripts/test-aarch64.sh` sets it to `neon`, the
+/// Intel SDE jobs to `avx512`) the detected backend must be exactly that one, so an emulated run
+/// that silently falls back to a lower tier fails. On AArch64 the backend is always NEON.
 #[cfg(feature = "std")]
 #[test]
 fn expected_backend_is_selected() {
-    if let Ok(expected) = std::env::var("ROARING128_EXPECT_BACKEND") {
-        assert_eq!(simd_backend().name(), expected.to_ascii_lowercase());
-    }
     #[cfg(target_arch = "aarch64")]
     {
         assert!(std::arch::is_aarch64_feature_detected!("neon"));
         assert!(SimdBackend::Neon.is_supported());
         assert_eq!(simd_backend(), SimdBackend::Neon);
     }
+    let Ok(expected) = std::env::var("ROARING128_EXPECT_BACKEND") else {
+        return;
+    };
+    #[cfg(target_arch = "x86_64")]
+    {
+        for (name, detected) in [
+            ("avx2", std::is_x86_feature_detected!("avx2")),
+            ("bmi2", std::is_x86_feature_detected!("bmi2")),
+            ("avx512f", std::is_x86_feature_detected!("avx512f")),
+            ("avx512bw", std::is_x86_feature_detected!("avx512bw")),
+            ("avx512vl", std::is_x86_feature_detected!("avx512vl")),
+            ("avx512dq", std::is_x86_feature_detected!("avx512dq")),
+            (
+                "avx512vpopcntdq",
+                std::is_x86_feature_detected!("avx512vpopcntdq"),
+            ),
+            (
+                "avx512bitalg",
+                std::is_x86_feature_detected!("avx512bitalg"),
+            ),
+            ("avx512vbmi2", std::is_x86_feature_detected!("avx512vbmi2")),
+        ] {
+            std::eprintln!("cpu feature {name:<16} {detected}");
+        }
+    }
+    let backend = simd_backend();
+    std::eprintln!("simd backend: {}", backend.name());
+    assert_eq!(
+        backend.name(),
+        expected.to_ascii_lowercase(),
+        "unexpected SIMD backend"
+    );
+    assert!(backends().any(|b| b.name() == backend.name()));
 }
 
 /// Lengths around the vector widths (8 and 16 lanes of `u16`, 32 and 64 for the wider units).
@@ -593,7 +593,8 @@ fn random_array_cases() -> Vec<(Vec<u16>, Vec<u16>)> {
     cases
 }
 
-/// Checks every array kernel of `backend` against the naive definitions.
+/// Checks every array kernel of `backend` on `(a, b)` against the naive definitions, with
+/// exact-size guarded output buffers.
 fn check_array_pair(backend: Impl, a: &[u16], b: &[u16]) {
     let ctx = || {
         format!(
@@ -1154,4 +1155,678 @@ fn kernel_timings() {
             });
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Randomized shapes
+// ---------------------------------------------------------------------------------------------
+
+/// Exactly `len` distinct sorted values from `lo..=hi` (requires `len <= hi - lo + 1`). The
+/// x86 kernel tests' generator; `exact_array` (NEON kernel tests) also accepts a short range.
+fn exact_array_strict(rng: &mut Rng, len: usize, lo: u16, hi: u16) -> Vec<u16> {
+    let span = hi as usize - lo as usize + 1;
+    assert!(len <= span);
+    if len * 2 > span {
+        // Dense: drop random values from the full range.
+        let mut v: Vec<u16> = (lo..=hi).collect();
+        while v.len() > len {
+            let i = rng.below(v.len() as u64) as usize;
+            v.swap_remove(i);
+        }
+        v.sort_unstable();
+        return v;
+    }
+    let mut seen = vec![false; span];
+    let mut v = Vec::with_capacity(len);
+    while v.len() < len {
+        let x = rng.below(span as u64) as usize;
+        if !seen[x] {
+            seen[x] = true;
+            v.push((lo as usize + x) as u16);
+        }
+    }
+    v.sort_unstable();
+    v
+}
+
+/// A random array of `len` values: random density, anywhere or clustered at either end.
+fn random_array(rng: &mut Rng, len: usize) -> Vec<u16> {
+    let len = len.min(65536);
+    let span_for = |shift: u64| (len.max(1) << shift).clamp(len.max(1), 65536);
+    match rng.below(6) {
+        // Clustered at 0.
+        0 => {
+            let span = span_for(rng.below(4));
+            exact_array_strict(rng, len, 0, (span - 1) as u16)
+        }
+        // Clustered at 65535.
+        1 => {
+            let span = span_for(rng.below(4));
+            exact_array_strict(rng, len, (65536 - span) as u16, u16::MAX)
+        }
+        // Anywhere, random density.
+        2 | 3 => {
+            let span = span_for(rng.below(8));
+            let lo = rng.below((65536 - span + 1) as u64) as u16;
+            exact_array_strict(rng, len, lo, (lo as usize + span - 1) as u16)
+        }
+        // Full range.
+        _ => exact_array_strict(rng, len, 0, u16::MAX),
+    }
+}
+
+/// Derives an array of about `len` values from `a`: a random half of `a` plus fresh values.
+fn related_array(rng: &mut Rng, a: &[u16], len: usize) -> Vec<u16> {
+    let mut v: Vec<u16> = a.iter().copied().filter(|_| rng.below(2) == 0).collect();
+    v.truncate(len);
+    let extra = random_array(rng, len - v.len());
+    v.extend(extra);
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+#[test]
+fn array_kernels_random_shapes() {
+    let mut rng = Rng(0x5EED_0003);
+    let widths = [
+        0usize, 1, 2, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33, 63, 64, 65, 127, 128, 129,
+    ];
+    let mut cases: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    // Lengths around the vector widths, independent and related values.
+    for &la in &widths {
+        for &lb in &widths {
+            for _ in 0..2 {
+                let a = random_array(&mut rng, la);
+                let b = random_array(&mut rng, lb);
+                let c = related_array(&mut rng, &a, lb);
+                cases.push((a.clone(), b));
+                cases.push((c.clone(), a.clone()));
+                cases.push((a, c));
+            }
+        }
+    }
+    // Random sizes up to the array container limit.
+    for _ in 0..300 {
+        let la = rng.below(4097) as usize;
+        let lb = rng.below(4097) as usize;
+        let a = random_array(&mut rng, la);
+        let b = if rng.below(2) == 0 {
+            random_array(&mut rng, lb)
+        } else {
+            related_array(&mut rng, &a, lb)
+        };
+        cases.push((a, b));
+    }
+    // Skewed sizes around the galloping thresholds.
+    for _ in 0..100 {
+        let small = 1 + rng.below(200) as usize;
+        let large = (small * (8 + rng.below(100) as usize)).min(8192);
+        let a = random_array(&mut rng, small);
+        let b = if rng.below(2) == 0 {
+            random_array(&mut rng, large)
+        } else {
+            related_array(&mut rng, &a, large)
+        };
+        cases.push((b.clone(), a.clone()));
+        cases.push((a, b));
+    }
+    // Interleaved values, so that both sides advance alternately.
+    for step in [1u16, 2, 3, 8, 9] {
+        let a: Vec<u16> = (0..4000u16)
+            .map(|x| x * step)
+            .take_while(|&x| x < 65000)
+            .collect();
+        let b: Vec<u16> = a.iter().map(|&x| x + 1).collect();
+        cases.push((a.clone(), b.clone()));
+        cases.push((b, a));
+    }
+    for backend in backends() {
+        for (a, b) in &cases {
+            check_array_pair(backend, a, b);
+        }
+    }
+}
+
+#[test]
+fn bitmap_to_array_random_tails() {
+    // Few set bits near the end of the container and at word boundaries: exercises the switch
+    // from the unrolled stores to the bounded tail (the output has exactly the cardinality).
+    let mut rng = Rng(0x5EED_0004);
+    let mut cases: Vec<Words> = Vec::new();
+    for card in [1usize, 7, 8, 9, 31, 32, 33, 63, 64, 65, 100, 200, 5000] {
+        for start in [0usize, 65536 - 2048, 65536 - 128] {
+            let mut w = [0u64; BITMAP_WORDS];
+            let span = (65536 - start).min(card * 4).max(card);
+            let start = start.min(65536 - span);
+            for v in exact_array_strict(&mut rng, card, start as u16, (start + span - 1) as u16) {
+                w[v as usize / 64] |= 1 << (v % 64);
+            }
+            cases.push(w);
+        }
+    }
+    // Uniform densities around the decoder switch points (4 and 8 bits per word).
+    for card in [3000usize, 4096, 4500, 6000, 8192, 9000, 12000] {
+        let mut w = [0u64; BITMAP_WORDS];
+        for v in exact_array_strict(&mut rng, card, 0, u16::MAX) {
+            w[v as usize / 64] |= 1 << (v % 64);
+        }
+        cases.push(w);
+    }
+    for dense_words in [1usize, 2, 3, 15] {
+        let mut w = [0u64; BITMAP_WORDS];
+        for x in w[BITMAP_WORDS - dense_words..].iter_mut() {
+            *x = rng.next() | 1;
+        }
+        w[3] = u64::MAX;
+        cases.push(w);
+    }
+    for backend in backends() {
+        for (ia, a) in cases.iter().enumerate() {
+            let card = naive_popcount(a);
+            let got = run_guarded(card as usize, |out| {
+                call!(backend, bitmap_to_array, bitmap_to_array_on(a, out))
+            });
+            let expected: Vec<u16> = (0..=u16::MAX)
+                .filter(|&i| a[i as usize / 64] >> (i % 64) & 1 == 1)
+                .collect();
+            assert_eq!(got, expected, "{} to_array case #{ia}", backend.name());
+            assert_eq!(
+                call!(backend, bitmap_count_runs, bitmap_count_runs_on(a)),
+                naive_runs(a),
+                "{} runs case #{ia}",
+                backend.name()
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Out-of-bounds accesses
+// ---------------------------------------------------------------------------------------------
+
+/// Anonymous memory surrounded by inaccessible guard pages (raw Linux syscalls, no libc
+/// dependency): any access outside the data region kills the test process.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod guard_pages {
+    /// Size of the regions: a multiple of every Linux page size (4, 16 and 64 KiB), large
+    /// enough for a full bitmap container decoded to an array.
+    const UNIT: usize = 256 * 1024;
+    const PROT_NONE: usize = 0;
+    const PROT_READ_WRITE: usize = 1 | 2;
+    const MAP_PRIVATE_ANONYMOUS: usize = 0x02 | 0x20;
+
+    /// `mmap`, `mprotect`, `munmap`.
+    #[cfg(target_arch = "x86_64")]
+    const SYS: (usize, usize, usize) = (9, 10, 11);
+    #[cfg(target_arch = "aarch64")]
+    const SYS: (usize, usize, usize) = (222, 226, 215);
+
+    unsafe fn syscall6(n: usize, a: [usize; 6]) -> isize {
+        let ret: isize;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") n as isize => ret,
+                in("rdi") a[0], in("rsi") a[1], in("rdx") a[2],
+                in("r10") a[3], in("r8") a[4], in("r9") a[5],
+                lateout("rcx") _, lateout("r11") _,
+                options(nostack),
+            );
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!(
+                "svc 0",
+                in("x8") n,
+                inlateout("x0") a[0] as isize => ret,
+                in("x1") a[1], in("x2") a[2], in("x3") a[3], in("x4") a[4], in("x5") a[5],
+                options(nostack),
+            );
+        }
+        ret
+    }
+
+    /// `[guard][data: LEN bytes][guard]`.
+    pub(super) struct Guarded {
+        base: *mut u8,
+    }
+
+    impl Guarded {
+        /// Size of the accessible region in bytes.
+        pub(super) const LEN: usize = UNIT;
+
+        pub(super) fn new() -> Guarded {
+            // SAFETY: an anonymous mapping and protection changes inside it.
+            unsafe {
+                let base = syscall6(
+                    SYS.0,
+                    [
+                        0,
+                        3 * UNIT,
+                        PROT_READ_WRITE,
+                        MAP_PRIVATE_ANONYMOUS,
+                        usize::MAX,
+                        0,
+                    ],
+                );
+                assert!(base > 0, "mmap failed: {base}");
+                let base = base as *mut u8;
+                for guard in [base, base.add(2 * UNIT)] {
+                    let r = syscall6(SYS.1, [guard as usize, UNIT, PROT_NONE, 0, 0, 0]);
+                    assert_eq!(r, 0, "mprotect failed");
+                }
+                Guarded { base }
+            }
+        }
+
+        /// The first accessible byte.
+        pub(super) fn data(&mut self) -> *mut u8 {
+            // SAFETY: inside the mapping.
+            unsafe { self.base.add(UNIT) }
+        }
+    }
+
+    impl Drop for Guarded {
+        fn drop(&mut self) {
+            // SAFETY: unmaps the region created in `new`.
+            unsafe { syscall6(SYS.2, [self.base as usize, 3 * UNIT, 0, 0, 0, 0]) };
+        }
+    }
+}
+
+/// Every kernel runs on inputs placed directly after and directly before an inaccessible page,
+/// with output buffers that end at an inaccessible page: reading or writing a single element
+/// outside the slices crashes the test. (Masked AVX-512 loads and stores must not fault on
+/// masked-off lanes either.)
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[test]
+fn kernels_stay_within_bounds() {
+    use guard_pages::Guarded;
+    /// Capacity of a region in `u16` values.
+    const CAP: usize = Guarded::LEN / 2;
+
+    /// Copies `src` to the start or to the end of the region.
+    fn place<'a>(region: &'a mut Guarded, src: &[u16], at_end: bool) -> &'a [u16] {
+        let offset = if at_end { CAP - src.len() } else { 0 };
+        // SAFETY: the region holds `CAP` values.
+        unsafe {
+            let p = region.data().cast::<u16>().add(offset);
+            core::ptr::copy_nonoverlapping(src.as_ptr(), p, src.len());
+            core::slice::from_raw_parts(p, src.len())
+        }
+    }
+
+    /// An output buffer of `len` values ending at the trailing guard page.
+    fn out_slice(region: &mut Guarded, len: usize) -> &mut [MaybeUninit<u16>] {
+        // SAFETY: the region holds `CAP` values.
+        unsafe {
+            let p = region.data().cast::<MaybeUninit<u16>>().add(CAP - len);
+            core::slice::from_raw_parts_mut(p, len)
+        }
+    }
+
+    /// A bitmap at the start or at the end of the region.
+    fn words(region: &mut Guarded, at_end: bool) -> &mut Words {
+        let offset = if at_end {
+            Guarded::LEN - size_of::<Words>()
+        } else {
+            0
+        };
+        // SAFETY: inside the region and 8-byte aligned.
+        unsafe { &mut *region.data().add(offset).cast::<Words>() }
+    }
+
+    let (mut ra, mut rb, mut ro) = (Guarded::new(), Guarded::new(), Guarded::new());
+    let mut rng = Rng(0x5EED_0005);
+    let mut lens = vec![
+        0usize, 1, 2, 3, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100, 1000, 4096,
+    ];
+    lens.extend((0..10).map(|_| rng.below(4097) as usize));
+    let bitmaps = bitmap_cases();
+    for backend in backends() {
+        for &la in &lens {
+            for &lb in &lens {
+                let a0 = random_array(&mut rng, la);
+                let b0 = if rng.below(2) == 0 {
+                    random_array(&mut rng, lb)
+                } else {
+                    related_array(&mut rng, &a0, lb)
+                };
+                for (a_end, b_end) in [(true, true), (false, false), (true, false), (false, true)] {
+                    let a = place(&mut ra, &a0, a_end);
+                    let b = place(&mut rb, &b0, b_end);
+                    let out = out_slice(&mut ro, a.len().min(b.len()));
+                    let n = call!(backend, array_intersect, array_intersect_on(a, b, out));
+                    assert_eq!(n, naive_intersect(a, b).len(), "{}", backend.name());
+                    call!(backend, array_intersect_card, array_intersect_card_on(a, b));
+                    call!(backend, array_intersects, array_intersects_on(a, b));
+                    let out = out_slice(&mut ro, a.len() + b.len());
+                    call!(backend, array_union, array_union_on(a, b, out));
+                    let out = out_slice(&mut ro, a.len());
+                    call!(backend, array_difference, array_difference_on(a, b, out));
+                    let out = out_slice(&mut ro, a.len() + b.len());
+                    call!(backend, array_xor, array_xor_on(a, b, out));
+                }
+            }
+        }
+
+        // Bitmaps at both ends of their regions.
+        for (a0, b0) in bitmaps.iter().zip(bitmaps.iter().rev()) {
+            for at_end in [false, true] {
+                let b = words(&mut rb, !at_end);
+                *b = *b0;
+                let b: &Words = b;
+                {
+                    let a = words(&mut ra, at_end);
+                    *a = *a0;
+                    let a: &Words = a;
+                    let card = call!(backend, bitmap_popcount, bitmap_popcount_on(a));
+                    call!(backend, bitmap_count_runs, bitmap_count_runs_on(a));
+                    call!(backend, bitmap_intersects, bitmap_intersects_on(a, b));
+                    call!(backend, bitmap_is_subset, bitmap_is_subset_on(a, b));
+                    for op in [BitOp::And, BitOp::Or, BitOp::Xor, BitOp::AndNot] {
+                        call!(backend, bitmap_op_card, bitmap_op_card_on(op, a, b));
+                        let out = words(&mut ro, at_end);
+                        call!(backend, bitmap_op, bitmap_op_on(op, a, b, out));
+                    }
+                    let out = out_slice(&mut ro, card as usize);
+                    let n = call!(backend, bitmap_to_array, bitmap_to_array_on(a, out));
+                    assert_eq!(n, card as usize, "{}", backend.name());
+                }
+                let a = words(&mut ra, at_end);
+                call!(
+                    backend,
+                    bitmap_op_inplace,
+                    bitmap_op_inplace_on(BitOp::Xor, a, b)
+                );
+                call!(
+                    backend,
+                    bitmap_op_inplace_nocard,
+                    bitmap_op_inplace_nocard_on(BitOp::Or, a, b)
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Timings
+// ---------------------------------------------------------------------------------------------
+
+/// The scalar reference re-instantiated with the AVX2 tier's target features: what the compiler
+/// achieves with auto-vectorization alone (the previous placeholder backend).
+#[cfg(target_arch = "x86_64")]
+mod autovec {
+    use super::*;
+
+    crate::simd::x86::scalar_kernels! { "avx2,bmi1,bmi2,popcnt,sse4.2" =>
+        bitmap_popcount(a: &Words) -> u32;
+        bitmap_op(op: BitOp, a: &Words, b: &Words, out: &mut Words) -> u32;
+        bitmap_op_inplace_nocard(op: BitOp, a: &mut Words, b: &Words);
+        bitmap_op_card(op: BitOp, a: &Words, b: &Words) -> u32;
+        bitmap_intersects(a: &Words, b: &Words) -> bool;
+        bitmap_is_subset(a: &Words, b: &Words) -> bool;
+        bitmap_to_array(a: &Words, out: &mut [MaybeUninit<u16>]) -> usize;
+        bitmap_count_runs(a: &Words) -> u32;
+        array_intersect(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize;
+        array_intersect_card(a: &[u16], b: &[u16]) -> usize;
+        array_intersects(a: &[u16], b: &[u16]) -> bool;
+        array_union(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize;
+        array_difference(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize;
+        array_xor(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u16>]) -> usize;
+    }
+}
+
+/// Best-of-N nanoseconds per call of `f`.
+#[cfg(feature = "std")]
+fn time_ns(mut f: impl FnMut()) -> f64 {
+    use std::time::{Duration, Instant};
+    for _ in 0..20 {
+        f();
+    }
+    let start = Instant::now();
+    let mut calls = 0u64;
+    while start.elapsed() < Duration::from_millis(5) {
+        f();
+        calls += 1;
+    }
+    let per_round = calls.max(1);
+    let mut best = f64::MAX;
+    for _ in 0..15 {
+        let start = Instant::now();
+        for _ in 0..per_round {
+            f();
+        }
+        best = best.min(start.elapsed().as_nanos() as f64 / per_round as f64);
+    }
+    best
+}
+
+/// Prints one row: the reference, the auto-vectorized reference and every supported backend.
+#[cfg(feature = "std")]
+macro_rules! bench_row {
+    ($label:expr, $name:ident, $name_on:ident ($($arg:expr),*)) => {{
+        use core::hint::black_box;
+        let reference = time_ns(|| {
+            black_box(scalar::$name($(black_box($arg)),*));
+        });
+        let mut row = std::format!("{:<44} {:>10.1}", $label, reference);
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: the AVX2 tier is the x86_64 minimum (checked by `backends()` users).
+            let auto = time_ns(|| unsafe {
+                black_box(autovec::$name($(black_box($arg)),*));
+            });
+            row += &std::format!(" {:>10.1}", auto);
+        }
+        for backend in ALL_BACKENDS.into_iter().filter(|b| b.is_supported()) {
+            let t = time_ns(|| {
+                black_box($name_on(backend, $(black_box($arg)),*));
+            });
+            row += &std::format!(" {:>10.1} ({:>5.1}x)", t, reference / t);
+        }
+        std::println!("{row}");
+    }};
+}
+
+/// Kernel timings against the scalar reference, in ns per call. Run with
+/// `cargo test --release --lib simd -- --ignored --nocapture`.
+#[cfg(feature = "std")]
+#[test]
+#[ignore = "timing report, run explicitly in release mode"]
+fn kernel_speedups() {
+    let mut rng = Rng(0x5EED_0006);
+    let mut header = std::format!("{:<44} {:>10}", "kernel / shape (ns per call)", "reference");
+    #[cfg(target_arch = "x86_64")]
+    {
+        header += &std::format!(" {:>10}", "autovec");
+    }
+    for backend in ALL_BACKENDS.into_iter().filter(|b| b.is_supported()) {
+        header += &std::format!(" {:>10} {:>7}", backend.name(), "speedup");
+    }
+    std::println!("{header}");
+
+    let random_words = |rng: &mut Rng, ands: u32| -> Words {
+        let mut w = [0u64; BITMAP_WORDS];
+        for x in w.iter_mut() {
+            *x = (0..ands).fold(u64::MAX, |acc, _| acc & rng.next());
+        }
+        w
+    };
+    let dense_a = random_words(&mut rng, 1);
+    let dense_b = random_words(&mut rng, 1);
+    let mut sparse = [0u64; BITMAP_WORDS];
+    for v in exact_array_strict(&mut rng, 5000, 0, u16::MAX) {
+        sparse[v as usize / 64] |= 1 << (v % 64);
+    }
+    let mut out_words = [0u64; BITMAP_WORDS];
+    let mut out = vec![MaybeUninit::new(0u16); 65536 + 64];
+    let disjoint = {
+        let mut w = dense_a;
+        for x in w.iter_mut() {
+            *x = !*x;
+        }
+        w
+    };
+
+    bench_row!(
+        "bitmap_popcount",
+        bitmap_popcount,
+        bitmap_popcount_on(&dense_a)
+    );
+    bench_row!(
+        "bitmap_op And (with card)",
+        bitmap_op,
+        bitmap_op_on(BitOp::And, &dense_a, &dense_b, &mut out_words)
+    );
+    bench_row!(
+        "bitmap_op Xor (with card)",
+        bitmap_op,
+        bitmap_op_on(BitOp::Xor, &dense_a, &dense_b, &mut out_words)
+    );
+    bench_row!(
+        "bitmap_op_card And",
+        bitmap_op_card,
+        bitmap_op_card_on(BitOp::And, &dense_a, &dense_b)
+    );
+    bench_row!(
+        "bitmap_op_inplace_nocard Or",
+        bitmap_op_inplace_nocard,
+        bitmap_op_inplace_nocard_on(BitOp::Or, &mut out_words, &dense_b)
+    );
+    bench_row!(
+        "bitmap_intersects (disjoint, full scan)",
+        bitmap_intersects,
+        bitmap_intersects_on(&dense_a, &disjoint)
+    );
+    bench_row!(
+        "bitmap_is_subset (subset, full scan)",
+        bitmap_is_subset,
+        bitmap_is_subset_on(&dense_a, &dense_a)
+    );
+    bench_row!(
+        "bitmap_to_array dense (32k bits)",
+        bitmap_to_array,
+        bitmap_to_array_on(&dense_a, &mut out)
+    );
+    bench_row!(
+        "bitmap_to_array sparse (5000 bits)",
+        bitmap_to_array,
+        bitmap_to_array_on(&sparse, &mut out)
+    );
+    bench_row!(
+        "bitmap_count_runs dense",
+        bitmap_count_runs,
+        bitmap_count_runs_on(&dense_a)
+    );
+
+    let a1000 = exact_array_strict(&mut rng, 1000, 0, 1999);
+    let b1000 = exact_array_strict(&mut rng, 1000, 0, 1999);
+    let a4000 = exact_array_strict(&mut rng, 4000, 0, 7999);
+    let b4000 = exact_array_strict(&mut rng, 4000, 0, 7999);
+    let a64 = exact_array_strict(&mut rng, 64, 0, 7999);
+    let a2000 = exact_array_strict(&mut rng, 2000, 0, 7999);
+    let b2000 = exact_array_strict(&mut rng, 2000, 0, 7999);
+    let s4000 = exact_array_strict(&mut rng, 4000, 0, u16::MAX);
+    let t4000 = exact_array_strict(&mut rng, 4000, 0, u16::MAX);
+    let a200 = exact_array_strict(&mut rng, 200, 0, 7999);
+    let (a1000, b1000, a4000, b4000, a64, a2000, b2000) = (
+        &a1000[..],
+        &b1000[..],
+        &a4000[..],
+        &b4000[..],
+        &a64[..],
+        &a2000[..],
+        &b2000[..],
+    );
+    let (s4000, t4000, a200) = (&s4000[..], &t4000[..], &a200[..]);
+
+    bench_row!(
+        "array_intersect 1000x1000 (50% dense)",
+        array_intersect,
+        array_intersect_on(a1000, b1000, &mut out)
+    );
+    bench_row!(
+        "array_intersect 4000x4000 (50% dense)",
+        array_intersect,
+        array_intersect_on(a4000, b4000, &mut out)
+    );
+    bench_row!(
+        "array_intersect 4000x4000 (sparse)",
+        array_intersect,
+        array_intersect_on(s4000, t4000, &mut out)
+    );
+    bench_row!(
+        "array_intersect 200x4000",
+        array_intersect,
+        array_intersect_on(a200, b4000, &mut out)
+    );
+    bench_row!(
+        "array_intersect 64x4000",
+        array_intersect,
+        array_intersect_on(a64, b4000, &mut out)
+    );
+    bench_row!(
+        "array_intersect_card 4000x4000",
+        array_intersect_card,
+        array_intersect_card_on(a4000, b4000)
+    );
+    bench_row!(
+        "array_intersects 4000x4000 sparse",
+        array_intersects,
+        array_intersects_on(s4000, t4000)
+    );
+    bench_row!(
+        "array_union 2000x2000",
+        array_union,
+        array_union_on(a2000, b2000, &mut out)
+    );
+    bench_row!(
+        "array_union 4000x4000 (sparse)",
+        array_union,
+        array_union_on(s4000, t4000, &mut out)
+    );
+    bench_row!(
+        "array_union 200x4000",
+        array_union,
+        array_union_on(a200, b4000, &mut out)
+    );
+    bench_row!(
+        "array_union 64x4000",
+        array_union,
+        array_union_on(a64, b4000, &mut out)
+    );
+    bench_row!(
+        "array_difference 2000x2000",
+        array_difference,
+        array_difference_on(a2000, b2000, &mut out)
+    );
+    bench_row!(
+        "array_difference 4000x200",
+        array_difference,
+        array_difference_on(b4000, a200, &mut out)
+    );
+    bench_row!(
+        "array_difference 200x4000",
+        array_difference,
+        array_difference_on(a200, b4000, &mut out)
+    );
+    bench_row!(
+        "array_xor 2000x2000",
+        array_xor,
+        array_xor_on(a2000, b2000, &mut out)
+    );
+    bench_row!(
+        "array_xor 200x4000",
+        array_xor,
+        array_xor_on(a200, b4000, &mut out)
+    );
 }
