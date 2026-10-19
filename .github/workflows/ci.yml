@@ -147,6 +147,11 @@ jobs:
       - name: cargo test --all-features --no-fail-fast (non-blocking for now)
         id: full
         continue-on-error: true
+        timeout-minutes: 15
+        # No backtraces here: while stubs panic, proptest shrinking panics thousands of times and
+        # RUST_BACKTRACE=1 turned that into ~0.5 GB of captured output and job timeouts.
+        env:
+          RUST_BACKTRACE: 0
         run: cargo test --all-features --no-fail-fast
       - name: Report non-blocking results
         if: always()
@@ -217,7 +222,11 @@ jobs:
       - name: cargo test --all-features --lib --tests --no-fail-fast under sde -${{ matrix.cpu }} (non-blocking for now)
         id: full
         continue-on-error: true
-        timeout-minutes: 30
+        timeout-minutes: 25
+        # No backtraces here: while stubs panic, proptest shrinking panics thousands of times and
+        # RUST_BACKTRACE=1 turned that into ~0.5 GB of captured output and job timeouts.
+        env:
+          RUST_BACKTRACE: 0
         run: cargo test --all-features --lib --tests --no-fail-fast
       - name: Report non-blocking results
         if: always()
@@ -272,6 +281,11 @@ jobs:
       - name: cargo test --all-features --no-fail-fast (non-blocking for now)
         id: full
         continue-on-error: true
+        timeout-minutes: 15
+        # No backtraces here: while stubs panic, proptest shrinking panics thousands of times and
+        # RUST_BACKTRACE=1 turned that into ~0.5 GB of captured output and job timeouts.
+        env:
+          RUST_BACKTRACE: 0
         run: cargo test --all-features --no-fail-fast
       - name: Report non-blocking results
         if: always()
