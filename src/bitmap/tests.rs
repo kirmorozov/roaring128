@@ -428,6 +428,10 @@ mod serialization {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "needs more than 4096 containers: too slow for the CI Miri step (`container` filter)"
+    )]
     fn many_containers_cross_chunk_boundaries() {
         // More descriptors than one read/write chunk, mixed kinds.
         let mut rb = RoaringBitmap128::new();
@@ -721,6 +725,12 @@ fn append_into_last_container_and_new_keys() {
     assert_eq!(rb.try_push(join(9, 1)), Ok(()));
     assert_eq!(rb.len(), 9);
     rb.internal_validate().unwrap();
+
+    // 12k containers are too slow for the CI Miri step, which selects this test through its
+    // `container` filter; the part above covers the container code.
+    if cfg!(miri) {
+        return;
+    }
 
     // Many new keys appended to a large index (linear append path) and to a small one.
     let mut big: RoaringBitmap128 = (0..5000u128).map(|k| join(k, 1)).collect();
