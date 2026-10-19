@@ -411,26 +411,27 @@ fn derive(rng: &mut Rng, a: &Model, kind: Kind) -> Model {
 /// Hand-picked sets around the edges (cheap ones first; Miri only uses the small ones, its
 /// bitmap operands come from the random bitmap tests).
 fn special_sets() -> Vec<Model> {
-    let sets: Vec<Model> = vec![
+    let mut sets: Vec<Model> = vec![
         Model::new(),
         Model::from([0]),
         Model::from([u16::MAX]),
         Model::from([0, u16::MAX]),
         (60..=70).chain(126..=130).collect(),
-        (0..=4096).collect(),
-        (0..=4095).collect(),
-        (0..=8192).step_by(2).collect(),
-        (61_439..=u16::MAX).collect(),
-        (0..=u16::MAX).collect(),
-        (1..u16::MAX).collect(),
-        (0..=u16::MAX).filter(|v| v % 64 != 63).collect(),
-        (0..=u16::MAX).step_by(3).collect(),
     ];
-    if cfg!(miri) {
-        sets.into_iter().take(5).collect()
-    } else {
-        sets
+    // Not even built under Miri: building these models alone takes minutes there.
+    if !cfg!(miri) {
+        sets.extend([
+            (0..=4096).collect(),
+            (0..=4095).collect(),
+            (0..=8192).step_by(2).collect(),
+            (61_439..=u16::MAX).collect(),
+            (0..=u16::MAX).collect(),
+            (1..u16::MAX).collect(),
+            (0..=u16::MAX).filter(|v| v % 64 != 63).collect(),
+            (0..=u16::MAX).step_by(3).collect(),
+        ]);
     }
+    sets
 }
 
 // ---------------------------------------------------------------------------------------------

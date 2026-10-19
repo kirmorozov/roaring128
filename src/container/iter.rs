@@ -1413,32 +1413,35 @@ pub(crate) mod tests {
     /// Shapes that stress word boundaries: full words, runs crossing words, isolated bits at
     /// both ends, the full container.
     fn special_sets() -> Vec<Vec<u16>> {
-        alloc::vec![
+        let mut sets = alloc::vec![
             Vec::new(),
             alloc::vec![0],
             alloc::vec![65535],
             alloc::vec![0, 65535],
             (0..64).collect(),
             (63..129).collect(),
-            (60..200).chain(300..301).collect(),
-            (0..=u16::MAX).collect(),
-            (0..=u16::MAX).filter(|v| v % 64 != 17).collect(),
-            (65400..=u16::MAX).collect(),
-            (0..=u16::MAX).step_by(63).collect(),
-            (1..=u16::MAX).collect(),
-            (0..u16::MAX).collect(),
-        ]
+        ];
+        if cfg!(miri) {
+            // Large sets are too slow to build and walk under Miri; a sparse set still
+            // crosses many words.
+            sets.push((0..20000).step_by(63).collect());
+        } else {
+            sets.extend([
+                (60..200).chain(300..301).collect(),
+                (0..=u16::MAX).collect(),
+                (0..=u16::MAX).filter(|v| v % 64 != 17).collect(),
+                (65400..=u16::MAX).collect(),
+                (0..=u16::MAX).step_by(63).collect(),
+                (1..=u16::MAX).collect(),
+                (0..u16::MAX).collect(),
+            ]);
+        }
+        sets
     }
 
     fn all_sets(seed: u64) -> Vec<Vec<u16>> {
         let mut rng = Rng::new(seed);
         let mut sets = special_sets();
-        if cfg!(miri) {
-            // Large sets are too slow to walk under Miri; a sparse set still crosses many
-            // words.
-            sets.retain(|s| s.len() <= 130);
-            sets.push((0..20000).step_by(63).collect());
-        }
         for _ in 0..cases(150) {
             sets.push(values_of(&store_model(&mut rng)));
         }

@@ -610,9 +610,13 @@ fn related_set(rng: &mut Rng, a: &Model) -> Model {
         }
         4 => Model::new(),
         5 => {
-            // Complement inside the span of `a`.
+            // Complement inside the span of `a`. Under Miri only for short spans: the
+            // complement of a sparse set has up to 65536 values, and every operation and
+            // model check on it takes minutes there.
             match (a.first(), a.last()) {
-                (Some(&lo), Some(&hi)) => (lo..=hi).filter(|v| !a.contains(v)).collect(),
+                (Some(&lo), Some(&hi)) if !cfg!(miri) || hi - lo < 1000 => {
+                    (lo..=hi).filter(|v| !a.contains(v)).collect()
+                }
                 _ => random_model(rng),
             }
         }
@@ -831,11 +835,17 @@ fn run_constructors() {
     for (lo, hi) in [(0, 2), (100, 5000), (0, 65535)] {
         let c = Container::from_range(lo..=hi);
         assert_eq!(c.kind(), Kind::Run);
-        check(&c, &(lo..=hi).collect());
+        assert_eq!(c.len(), (hi - lo) as u64 + 1);
+        assert_eq!((c.min(), c.max()), (Some(lo), Some(hi)));
+        // Value-by-value model checks of long ranges take minutes under Miri.
+        if !cfg!(miri) || hi - lo < 300 {
+            check(&c, &(lo..=hi).collect());
+        }
     }
     let full = Container::full();
     assert_eq!(full.kind(), Kind::Run);
     assert!(full.is_full());
+    assert_eq!(full.len(), 65536);
     assert!(!Container::from_range(0..=65534).is_full());
     assert!(!Container::from_range(1..=65535).is_full());
     let mut split = Container::full();
@@ -843,7 +853,9 @@ fn run_constructors() {
     assert!(!split.is_full());
     split.insert(1000);
     assert!(split.is_full());
-    check(&full, &(0..=u16::MAX).collect());
+    if !cfg!(miri) {
+        check(&full, &(0..=u16::MAX).collect());
+    }
 }
 
 fn lsb0_bytes(model: &Model, byte_offset: usize, len: usize) -> Vec<u8> {
@@ -1085,7 +1097,11 @@ fn roaring_kind(rb: &roaring::RoaringBitmap) -> Option<Kind> {
 #[track_caller]
 fn assert_same_as_roaring(c: &Container, rb: &roaring::RoaringBitmap) {
     assert_eq!(c.len(), rb.len());
-    assert!(c.iter().map(u32::from).eq(rb.iter()));
+    // Comparing every value of large (e.g. full) containers takes minutes under Miri; the
+    // cardinality, representation and serialized size are still compared there.
+    if !cfg!(miri) || c.len() <= ARRAY_LIMIT + 16 {
+        assert!(c.iter().map(u32::from).eq(rb.iter()));
+    }
     let Some(kind) = roaring_kind(rb) else {
         assert!(c.is_empty());
         return;
