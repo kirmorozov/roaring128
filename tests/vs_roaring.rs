@@ -999,7 +999,23 @@ proptest! {
         let theirs = RoaringBitmap::from_lsb0_bytes(offset, &bytes);
         assert_valid(&ours);
         assert_same_seq(ours.iter(), theirs.iter().map(u128::from), "from_lsb0_bytes");
-        prop_assert_eq!(kinds_ours(&ours), kinds_bitmap(&theirs), "from_lsb0_bytes: container kinds (repr)");
+    }
+
+    /// roaring 0.11.5 builds a bitmap container for exactly 4096 bits (`bits_set < ARRAY_LIMIT`
+    /// in `Store::from_lsb0_bytes`), breaking its own array/bitmap invariant; such inputs are
+    /// not compared.
+    #[test]
+    fn bitmap_repr_from_lsb0_bytes(offset in prop_oneof![0..100_000u32, any::<u32>()], bytes in prop_oneof![
+        vec(any::<u8>(), 0..64),
+        vec(prop_oneof![Just(0u8), Just(0xFF), any::<u8>()], 0..20_000),
+    ]) {
+        let fits = bytes.is_empty() || (offset as u64 + bytes.len() as u64 * 8) <= 1 << 32;
+        prop_assume!(fits);
+        let ours = RoaringBitmap128::from_lsb0_bytes(offset as u128, &bytes);
+        let theirs = RoaringBitmap::from_lsb0_bytes(offset, &bytes);
+        let model: Model = ours.iter().collect();
+        prop_assume!(container_shapes(&model).iter().all(|&(_, card, _)| card != 4096));
+        prop_assert_eq!(kinds_ours(&ours), kinds_bitmap(&theirs), "from_lsb0_bytes: container kinds");
     }
 
     #[test]
