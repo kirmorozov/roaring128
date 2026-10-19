@@ -6,7 +6,8 @@
 //! * `intersects` / `is_subset` fold 1 KiB blocks with `vpternlogq` and exit early.
 //! * `bitmap_to_array` compresses index vectors with `vpcompressw` (32 bits at a time, no
 //!   data-dependent branches); full width stores while there is room, masked stores at the
-//!   end of the output. Blocks of 64 words with at most one bit per word use a `tzcnt` loop.
+//!   end of the output (checked against the room left: a short output panics, it is never
+//!   written past). Blocks of 64 words with at most one bit per word use a `tzcnt` loop.
 //! * `count_runs` uses one `vpternlogq` per vector for `w & !(w << 1 | carry)`.
 //! * Array kernels: see [`super::arrays`]; lanes are packed with `vpcompressw`, partial blocks
 //!   are read and written with masked loads and stores.
@@ -197,12 +198,14 @@ impl Lanes for Avx512Lanes {
 
     #[inline(always)]
     unsafe fn store_first(v: __m128i, n: usize, out: &mut [MaybeUninit<u16>], k: usize) {
-        debug_assert!(k + n <= out.len());
+        debug_assert!(k <= out.len() && n <= 8);
+        let room = out.len() - k;
         unsafe {
             let dst = out.as_mut_ptr().add(k).cast::<i16>();
-            if out.len() - k >= 8 {
+            if room >= 8 {
                 _mm_storeu_si128(dst.cast(), v);
             } else {
+                assert!(n <= room, "kernel output buffer too small");
                 _mm_mask_storeu_epi16(dst, low_bits32(n as u32) as __mmask8, v);
             }
         }
@@ -274,12 +277,20 @@ kernels! {
                     let vlo = _mm512_maskz_compress_epi16(lo, lo_idx);
                     let vhi = _mm512_maskz_compress_epi16(hi, hi_idx);
                     let (nlo, nhi) = (lo.count_ones() as usize, hi.count_ones() as usize);
+                    // `written <= len` throughout: every word below stores at most the room left.
+                    let room = len - written;
                     unsafe {
-                        if len - written >= 64 {
+                        if room >= 64 {
+                            // Full width stores end at most 64 lanes after `written`.
                             _mm512_storeu_si512(dst.add(written).cast(), vlo);
                             _mm512_storeu_si512(dst.add(written + nlo).cast(), vhi);
                         } else {
-                            // `out` holds exactly the remaining values: masked stores.
+                            // End of `out`: masked stores of exactly the word's values, which
+                            // must fit (a short `out` panics here, before any store past it).
+                            assert!(
+                                nlo + nhi <= room,
+                                "bitmap_to_array: output buffer too small"
+                            );
                             let (mlo, mhi) = (low_bits32(nlo as u32), low_bits32(nhi as u32));
                             _mm512_mask_storeu_epi16(dst.add(written), mlo, vlo);
                             _mm512_mask_storeu_epi16(dst.add(written + nlo), mhi, vhi);

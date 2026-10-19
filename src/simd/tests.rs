@@ -980,6 +980,189 @@ fn bitmap_to_array_short_output_panics_in_bounds() {
     }
 }
 
+/// Calls an array kernel with an output buffer on the given implementation.
+#[cfg(feature = "std")]
+type RunOutKernel = fn(Impl, &[u16], &[u16], &mut [MaybeUninit<u16>]) -> usize;
+
+/// An array kernel that writes to an output buffer, with the documented bound of that buffer.
+#[cfg(feature = "std")]
+#[derive(Clone, Copy)]
+struct OutKernel {
+    name: &'static str,
+    run: RunOutKernel,
+    bound: fn(&[u16], &[u16]) -> usize,
+}
+
+#[cfg(feature = "std")]
+const OUT_KERNELS: [OutKernel; 4] = [
+    OutKernel {
+        name: "intersect",
+        run: |imp, a, b, out| call!(imp, array_intersect, array_intersect_on(a, b, out)),
+        bound: |a, b| a.len().min(b.len()),
+    },
+    OutKernel {
+        name: "union",
+        run: |imp, a, b, out| call!(imp, array_union, array_union_on(a, b, out)),
+        bound: |a, b| a.len() + b.len(),
+    },
+    OutKernel {
+        name: "difference",
+        run: |imp, a, b, out| call!(imp, array_difference, array_difference_on(a, b, out)),
+        bound: |a, _| a.len(),
+    },
+    OutKernel {
+        name: "xor",
+        run: |imp, a, b, out| call!(imp, array_xor, array_xor_on(a, b, out)),
+        bound: |a, b| a.len() + b.len(),
+    },
+];
+
+/// Runs `f` on an output buffer of `len` values followed by a guard zone and catches a panic:
+/// returns the reported length, or `None` if `f` panicked. Fails if anything was written past
+/// the buffer.
+#[cfg(feature = "std")]
+fn run_catching(
+    len: usize,
+    ctx: &dyn Fn() -> String,
+    f: impl FnOnce(&mut [MaybeUninit<u16>]) -> usize,
+) -> Option<usize> {
+    const GUARD: usize = 128;
+    const SENTINEL: u16 = 0x5A5A;
+    let mut buf = vec![MaybeUninit::new(SENTINEL); len + GUARD];
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut buf[..len])));
+    for (i, g) in buf[len..].iter().enumerate() {
+        // SAFETY: the guard zone was initialized with the sentinel.
+        assert_eq!(
+            unsafe { g.assume_init() },
+            SENTINEL,
+            "write past the output buffer at +{i}: {}",
+            ctx()
+        );
+    }
+    result.ok()
+}
+
+/// An output buffer below the documented bound of an array kernel must panic without writing
+/// past its end, whichever path (tiny inputs, searches, blocks) the input shapes select.
+#[cfg(feature = "std")]
+#[test]
+fn array_kernels_short_output_panics_in_bounds() {
+    let mut rng = Rng(0x5EED_0109);
+    let mut cases: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    for (la, lb) in [
+        (1, 1),
+        (3, 4),
+        (8, 9),
+        (17, 17),
+        (10, 400),
+        (400, 10),
+        (100, 120),
+        (1000, 1000),
+        (4096, 64),
+        (0, 50),
+        (50, 0),
+    ] {
+        let a = random_array(&mut rng, la);
+        let b = if rng.below(2) == 0 {
+            random_array(&mut rng, lb)
+        } else {
+            related_array(&mut rng, &a, lb)
+        };
+        cases.push((a, b));
+    }
+    for backend in backends() {
+        for (a, b) in &cases {
+            for k in OUT_KERNELS {
+                let bound = (k.bound)(a, b);
+                for short in [1, 2, 9, bound / 2] {
+                    if short == 0 || short > bound {
+                        continue;
+                    }
+                    let len = bound - short;
+                    let ctx = || {
+                        format!(
+                            "{} {} |a|={} |b|={} out={len}",
+                            backend.name(),
+                            k.name,
+                            a.len(),
+                            b.len()
+                        )
+                    };
+                    let result = run_catching(len, &ctx, |out| (k.run)(backend, a, b, out));
+                    assert!(result.is_none(), "accepted a short buffer: {}", ctx());
+                }
+            }
+        }
+    }
+}
+
+/// Values from `0..range` (many repeats), sorted, reverse sorted or in random order.
+#[cfg(feature = "std")]
+fn invalid_array(rng: &mut Rng) -> Vec<u16> {
+    const LENS: [usize; 12] = [0, 1, 7, 8, 9, 16, 17, 33, 64, 100, 300, 1000];
+    let len = LENS[rng.below(LENS.len() as u64) as usize];
+    let range = [2u64, 16, 300, 65536][rng.below(4) as usize];
+    let mut v: Vec<u16> = (0..len).map(|_| rng.below(range) as u16).collect();
+    match rng.below(3) {
+        0 => v.sort_unstable(),
+        1 => v.sort_unstable_by(|x, y| y.cmp(x)),
+        _ => {}
+    }
+    v
+}
+
+/// Inputs that are not strictly increasing break the precondition of the array kernels, so
+/// their results are unspecified. The kernels are reachable from safe code all the same: they
+/// may panic or return any length within the bound, but never write past the output buffer.
+#[cfg(feature = "std")]
+#[test]
+fn array_kernels_invalid_input_stay_in_bounds() {
+    let mut rng = Rng(0x5EED_010A);
+    let mut cases: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    // A block of one side matched again by every block of repeats on the other side: more
+    // matches than the shorter side has values.
+    let ramp: Vec<u16> = (1..=48).collect();
+    for v in [1u16, 8, 9, 48] {
+        cases.push((ramp.clone(), vec![v; 400]));
+        cases.push((vec![v; 400], ramp.clone()));
+    }
+    cases.push(((0..500).rev().collect(), (0..500).collect()));
+    for _ in 0..60 {
+        let a = invalid_array(&mut rng);
+        let b = if rng.below(3) == 0 {
+            let len = rng.below(1000) as usize;
+            random_array(&mut rng, len)
+        } else {
+            invalid_array(&mut rng)
+        };
+        cases.push((b.clone(), a.clone()));
+        cases.push((a, b));
+    }
+    for backend in backends() {
+        for (a, b) in &cases {
+            for k in OUT_KERNELS {
+                let bound = (k.bound)(a, b);
+                let ctx = || {
+                    format!(
+                        "{} {} a={:?}.. b={:?}..",
+                        backend.name(),
+                        k.name,
+                        &a[..a.len().min(12)],
+                        &b[..b.len().min(12)]
+                    )
+                };
+                if let Some(n) = run_catching(bound, &ctx, |out| (k.run)(backend, a, b, out)) {
+                    assert!(
+                        n <= bound,
+                        "reported {n} values for a bound of {bound}: {}",
+                        ctx()
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Rough per-kernel timings of every backend, for tuning on real hardware (emulated timings are
 /// meaningless). Run with
 /// `cargo test --release --lib simd::tests::kernel_timings -- --ignored --nocapture`.

@@ -69,16 +69,23 @@ pub(crate) trait Lanes {
         }
     }
 
-    /// Writes the first `n` lanes of `v` to `out[k..k + n]` without touching anything past
-    /// `out.len()`. Requires `k + n <= out.len()`.
+    /// Writes the first `n <= 8` lanes of `v` to `out[k..k + n]` without touching anything past
+    /// `out.len()`. Requires `k <= out.len()`; panics if the `n` lanes do not fit (then nothing
+    /// is written). The check is only made within 8 lanes of the end of `out`: a full width
+    /// store is used before that.
+    ///
+    /// The kernels advance `k` only through this function and bounds-checked writes, so
+    /// `k <= out.len()` holds whatever the inputs (unsorted inputs included).
     #[inline(always)]
     unsafe fn store_first(v: __m128i, n: usize, out: &mut [MaybeUninit<u16>], k: usize) {
-        debug_assert!(k + n <= out.len());
+        debug_assert!(k <= out.len() && n <= 8);
+        let room = out.len() - k;
         unsafe {
             let dst = out.as_mut_ptr().add(k).cast::<u16>();
-            if out.len() - k >= 8 {
+            if room >= 8 {
                 _mm_storeu_si128(dst.cast(), v);
             } else {
+                assert!(n <= room, "kernel output buffer too small");
                 let mut tmp = [0u16; 8];
                 _mm_storeu_si128(tmp.as_mut_ptr().cast(), v);
                 copy_lt8(tmp.as_ptr(), dst, n);
@@ -834,7 +841,8 @@ unsafe fn union_blocks<L: Lanes>(a: &[u16], b: &[u16], out: &mut [MaybeUninit<u1
         let (cap, dst) = (out.len(), out.as_mut_ptr().cast::<u16>());
         let mut k = 0;
         // Every emitted vector holds values of fully loaded blocks with at least eight loaded
-        // values still pending, so the eight lane store stays within `a.len() + b.len()`.
+        // values still pending, so the eight lane store stays within `a.len() + b.len()`
+        // (`check_out`), whatever the values: the bound only counts loaded lanes.
         let (i, j, prev, hi) = merge_blocks(
             a,
             b,
