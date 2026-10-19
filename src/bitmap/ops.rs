@@ -42,8 +42,7 @@ impl RoaringBitmap128 {
     /// assert_eq!(rb1.intersection_len(&rb2), (rb1 & rb2).len());
     /// ```
     pub fn intersection_len(&self, other: &RoaringBitmap128) -> u64 {
-        let _ = other;
-        todo!()
+        self.intersection_len_impl(other)
     }
 
     /// Computes the len of the difference with the specified other bitmap without creating a new
@@ -125,24 +124,21 @@ impl BitOr<&RoaringBitmap128> for &RoaringBitmap128 {
 
     /// An `union` between two sets.
     fn bitor(self, rhs: &RoaringBitmap128) -> RoaringBitmap128 {
-        let _ = rhs;
-        todo!()
+        self.union_ref(rhs)
     }
 }
 
 impl BitOrAssign<RoaringBitmap128> for RoaringBitmap128 {
     /// An `union` between two sets.
     fn bitor_assign(&mut self, rhs: RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.union_assign_owned(rhs)
     }
 }
 
 impl BitOrAssign<&RoaringBitmap128> for RoaringBitmap128 {
     /// An `union` between two sets.
     fn bitor_assign(&mut self, rhs: &RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.union_assign_ref(rhs)
     }
 }
 
@@ -180,24 +176,21 @@ impl BitAnd<&RoaringBitmap128> for &RoaringBitmap128 {
 
     /// An `intersection` between two sets.
     fn bitand(self, rhs: &RoaringBitmap128) -> RoaringBitmap128 {
-        let _ = rhs;
-        todo!()
+        self.intersection_ref(rhs)
     }
 }
 
 impl BitAndAssign<RoaringBitmap128> for RoaringBitmap128 {
     /// An `intersection` between two sets.
     fn bitand_assign(&mut self, rhs: RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.intersect_assign_owned(rhs)
     }
 }
 
 impl BitAndAssign<&RoaringBitmap128> for RoaringBitmap128 {
     /// An `intersection` between two sets.
     fn bitand_assign(&mut self, rhs: &RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.intersect_assign_ref(rhs)
     }
 }
 
@@ -235,8 +228,7 @@ impl Sub<&RoaringBitmap128> for &RoaringBitmap128 {
 
     /// A `difference` between two sets.
     fn sub(self, rhs: &RoaringBitmap128) -> RoaringBitmap128 {
-        let _ = rhs;
-        todo!()
+        self.difference_ref(rhs)
     }
 }
 
@@ -250,8 +242,7 @@ impl SubAssign<RoaringBitmap128> for RoaringBitmap128 {
 impl SubAssign<&RoaringBitmap128> for RoaringBitmap128 {
     /// A `difference` between two sets.
     fn sub_assign(&mut self, rhs: &RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.difference_assign_ref(rhs)
     }
 }
 
@@ -289,23 +280,20 @@ impl BitXor<&RoaringBitmap128> for &RoaringBitmap128 {
 
     /// A `symmetric difference` between two sets.
     fn bitxor(self, rhs: &RoaringBitmap128) -> RoaringBitmap128 {
-        let _ = rhs;
-        todo!()
+        self.symmetric_difference_ref(rhs)
     }
 }
 
 impl BitXorAssign<RoaringBitmap128> for RoaringBitmap128 {
     /// A `symmetric difference` between two sets.
     fn bitxor_assign(&mut self, rhs: RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.symmetric_difference_assign_owned(rhs)
     }
 }
 
 impl BitXorAssign<&RoaringBitmap128> for RoaringBitmap128 {
     /// A `symmetric difference` between two sets.
     fn bitxor_assign(&mut self, rhs: &RoaringBitmap128) {
-        let _ = rhs;
-        todo!()
+        self.symmetric_difference_assign_ref(rhs)
     }
 }

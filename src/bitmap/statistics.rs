@@ -1,4 +1,5 @@
 use crate::RoaringBitmap128;
+use crate::container::Kind;
 
 /// Detailed statistics on the composition of a bitmap.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -53,6 +54,42 @@ impl RoaringBitmap128 {
     /// assert_eq!(statistics.cardinality, 99);
     /// ```
     pub fn statistics(&self) -> Statistics {
-        todo!()
+        let mut statistics = Statistics {
+            n_containers: self.map.len() as u64,
+            n_array_containers: 0,
+            n_run_containers: 0,
+            n_bitset_containers: 0,
+            n_values_array_containers: 0,
+            n_values_run_containers: 0,
+            n_values_bitset_containers: 0,
+            n_bytes_array_containers: 0,
+            n_bytes_run_containers: 0,
+            n_bytes_bitset_containers: 0,
+            max_value: self.max(),
+            min_value: self.min(),
+            cardinality: self.len,
+        };
+        for container in self.map.values() {
+            let values = container.len();
+            let bytes = container.mem_size() as u64;
+            match container.kind() {
+                Kind::Array => {
+                    statistics.n_array_containers += 1;
+                    statistics.n_values_array_containers += values;
+                    statistics.n_bytes_array_containers += bytes;
+                }
+                Kind::Bitmap => {
+                    statistics.n_bitset_containers += 1;
+                    statistics.n_values_bitset_containers += values;
+                    statistics.n_bytes_bitset_containers += bytes;
+                }
+                Kind::Run => {
+                    statistics.n_run_containers += 1;
+                    statistics.n_values_run_containers += values;
+                    statistics.n_bytes_run_containers += bytes;
+                }
+            }
+        }
+        statistics
     }
 }

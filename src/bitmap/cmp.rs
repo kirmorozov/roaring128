@@ -21,8 +21,7 @@ impl RoaringBitmap128 {
     /// assert_eq!(rb1.is_disjoint(&rb2), false);
     /// ```
     pub fn is_disjoint(&self, other: &Self) -> bool {
-        let _ = other;
-        todo!()
+        self.is_disjoint_impl(other)
     }
 
     /// Returns `true` if this set is a subset of `other`.
@@ -48,8 +47,7 @@ impl RoaringBitmap128 {
     /// assert_eq!(rb1.is_subset(&rb2), false);
     /// ```
     pub fn is_subset(&self, other: &Self) -> bool {
-        let _ = other;
-        todo!()
+        self.is_subset_impl(other)
     }
 
     /// Returns `true` if this set is a superset of `other`.
