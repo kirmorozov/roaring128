@@ -10,6 +10,7 @@
 use core::mem::size_of;
 use core::ops::RangeInclusive;
 
+use alloc::alloc::{Layout, alloc_zeroed, handle_alloc_error};
 use alloc::boxed::Box;
 
 use super::array::ArrayStore;
@@ -101,8 +102,18 @@ fn words_as_bytes(words: &Words) -> &[u8; BITMAP_BYTES] {
 impl BitmapStore {
     /// An empty bitmap (zeroed allocation).
     pub(crate) fn new() -> BitmapStore {
-        // SAFETY: all-zero bits are a valid `BitmapData` (plain integers).
-        BitmapStore(unsafe { Box::<BitmapData>::new_zeroed().assume_init() })
+        // `Box::new_zeroed` needs Rust 1.92, above the MSRV.
+        let layout = Layout::new::<BitmapData>();
+        // SAFETY: the layout has a non-zero size. The block comes from the global allocator
+        // with the layout of `BitmapData`, as `Box::from_raw` requires, and all-zero bytes are a
+        // valid `BitmapData` (plain integers).
+        unsafe {
+            let ptr = alloc_zeroed(layout).cast::<BitmapData>();
+            if ptr.is_null() {
+                handle_alloc_error(layout);
+            }
+            BitmapStore(Box::from_raw(ptr))
+        }
     }
 
     pub(crate) fn full() -> BitmapStore {
@@ -646,5 +657,266 @@ impl Clone for BitmapStore {
 impl core::fmt::Debug for BitmapStore {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "BitmapStore<{}>", self.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::container::tests::{Model, Rng, cases, random_model, runs_of};
+
+    fn values(b: &BitmapStore) -> Vec<u16> {
+        (0..=u16::MAX).filter(|&v| b.contains(v)).collect()
+    }
+
+    #[track_caller]
+    fn check(b: &BitmapStore, model: &Model) {
+        assert!(values(b).iter().eq(model.iter()), "{b:?}");
+        assert_eq!(b.len(), model.len() as u64);
+        assert_eq!(b.len(), simd::bitmap_popcount(b.as_words()) as u64);
+    }
+
+    fn bitmap_of(model: &Model) -> BitmapStore {
+        BitmapStore::from_sorted_unchecked(&model.iter().copied().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn select_in_word_exhaustive_positions() {
+        let mut rng = Rng::new(0xB001);
+        let mut words = alloc::vec![0, 1, 1 << 63, u64::MAX, 0x8000_0000_0000_0001];
+        for _ in 0..cases(2000) {
+            words.push(rng.next() & rng.next());
+        }
+        for w in words {
+            let positions: Vec<u32> = (0..64).filter(|i| w >> i & 1 == 1).collect();
+            for (n, &p) in positions.iter().enumerate() {
+                assert_eq!(select_in_word(w, n as u32), p, "{w:#x} {n}");
+            }
+        }
+    }
+
+    /// Store-level operations at any cardinality (no conversion to arrays).
+    #[test]
+    fn operations_against_model() {
+        let mut rng = Rng::new(0xB002);
+        for _ in 0..cases(200) {
+            let mut model = random_model(&mut rng);
+            let mut b = bitmap_of(&model);
+            check(&b, &model);
+            for _ in 0..cases(40) {
+                match rng.below(8) {
+                    0 => {
+                        let v = rng.value(&model);
+                        assert_eq!(b.insert(v), model.insert(v));
+                    }
+                    1 => {
+                        let v = rng.value(&model);
+                        assert_eq!(b.remove(v), model.remove(&v));
+                    }
+                    2 => {
+                        let r = rng.range(&model);
+                        let added = r.clone().filter(|v| !model.contains(v)).count();
+                        model.extend(r.clone());
+                        assert_eq!(b.insert_range(r), added as u64);
+                    }
+                    3 => {
+                        let r = rng.range(&model);
+                        let before = model.len();
+                        model.retain(|v| !r.contains(v));
+                        assert_eq!(b.remove_range(r), (before - model.len()) as u64);
+                    }
+                    4 => {
+                        let v = rng.value(&model);
+                        let appended = model.last().is_none_or(|&m| m < v);
+                        if appended {
+                            model.insert(v);
+                        }
+                        assert_eq!(b.push(v), appended);
+                    }
+                    5 => {
+                        let n = rng.below(model.len() as u64 + 2);
+                        for _ in 0..n {
+                            model.pop_first();
+                        }
+                        b.remove_smallest(n);
+                    }
+                    6 => {
+                        let n = rng.below(model.len() as u64 + 2);
+                        for _ in 0..n {
+                            model.pop_last();
+                        }
+                        b.remove_biggest(n);
+                    }
+                    _ => {
+                        assert_eq!(b.min(), model.first().copied());
+                        assert_eq!(b.max(), model.last().copied());
+                        for _ in 0..4 {
+                            let v = rng.value(&model);
+                            assert_eq!(b.rank(v), model.range(..=v).count() as u64, "rank {v}");
+                            let r = rng.range(&model);
+                            let inside = model.range(r.clone()).count();
+                            assert_eq!(b.range_cardinality(r.clone()), inside as u64);
+                            assert_eq!(b.contains_range(r.clone()), inside == r.len());
+                        }
+                        let len = model.len();
+                        for n in [
+                            0,
+                            1,
+                            len / 4,
+                            len / 2,
+                            len * 3 / 4,
+                            len.saturating_sub(1),
+                            len,
+                        ] {
+                            if n <= u16::MAX as usize {
+                                let expected = model.iter().nth(n).copied();
+                                assert_eq!(b.select(n as u16), expected, "select {n}");
+                            }
+                        }
+                        let values: Vec<u16> = model.iter().copied().collect();
+                        assert_eq!(b.count_runs(), runs_of(&values).len() as u64);
+                        assert!(b.to_array_store().as_slice() == &values[..]);
+                    }
+                }
+                check(&b, &model);
+            }
+        }
+    }
+
+    #[test]
+    fn operations_with_arrays_and_bitmaps() {
+        let mut rng = Rng::new(0xB003);
+        for _ in 0..cases(200) {
+            let ma = random_model(&mut rng);
+            let mb = random_model(&mut rng);
+            let (a, b) = (bitmap_of(&ma), bitmap_of(&mb));
+            let vb: Vec<u16> = mb.iter().copied().collect();
+
+            let mut x = a.clone();
+            x.or_array(&vb);
+            check(&x, &(&ma | &mb));
+            let mut x = a.clone();
+            x.andnot_array(&vb);
+            check(&x, &(&ma - &mb));
+            let mut x = a.clone();
+            x.xor_array(&vb);
+            check(&x, &(&ma ^ &mb));
+            let mut x = a.clone();
+            x.or_array_nocard(&vb);
+            x.recount();
+            check(&x, &(&ma | &mb));
+            let mut x = a.clone();
+            x.xor_array_nocard(&vb);
+            x.recount();
+            check(&x, &(&ma ^ &mb));
+            assert_eq!(a.intersection_len_array(&vb), (&ma & &mb).len() as u64);
+            assert!(
+                a.filter_array(&vb, true)
+                    .as_slice()
+                    .iter()
+                    .eq((&mb & &ma).iter())
+            );
+            assert!(
+                a.filter_array(&vb, false)
+                    .as_slice()
+                    .iter()
+                    .eq((&mb - &ma).iter())
+            );
+            let card = (&ma - &mb).len() as u64;
+            assert!(
+                a.array_op_to_array(&vb, false, card)
+                    .as_slice()
+                    .iter()
+                    .eq((&ma - &mb).iter())
+            );
+            let card = (&ma ^ &mb).len() as u64;
+            assert!(
+                a.array_op_to_array(&vb, true, card)
+                    .as_slice()
+                    .iter()
+                    .eq((&ma ^ &mb).iter())
+            );
+
+            let ops = [
+                (BitOp::And, &ma & &mb),
+                (BitOp::Or, &ma | &mb),
+                (BitOp::Xor, &ma ^ &mb),
+                (BitOp::AndNot, &ma - &mb),
+            ];
+            for (op, expected) in ops {
+                check(&BitmapStore::op(op, &a, &b), &expected);
+                let mut x = a.clone();
+                assert_eq!(x.op_assign(op, &b), expected.len() as u64);
+                check(&x, &expected);
+                let mut x = a.clone();
+                x.op_assign_nocard(op, &b);
+                x.recount();
+                check(&x, &expected);
+                let array = BitmapStore::op_to_array(op, &a, &b, expected.len() as u64);
+                assert!(array.as_slice().iter().eq(expected.iter()));
+            }
+            assert_eq!(a.intersection_len(&b), (&ma & &mb).len() as u64);
+            assert_eq!(a.is_disjoint(&b), ma.is_disjoint(&mb));
+            assert_eq!(a.is_subset(&b), ma.is_subset(&mb));
+            let mut c = BitmapStore::new();
+            c.clone_from(&a);
+            check(&c, &ma);
+        }
+    }
+
+    #[test]
+    fn lsb0_bytes() {
+        let mut rng = Rng::new(0xB004);
+        for _ in 0..cases(100) {
+            let offset = rng.below(BITMAP_BYTES as u64) as usize;
+            let len = rng.below((BITMAP_BYTES - offset) as u64 + 1) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            let mut model = Model::new();
+            for (i, &byte) in bytes.iter().enumerate() {
+                for bit in 0..8 {
+                    if byte >> bit & 1 == 1 {
+                        model.insert(((offset + i) * 8 + bit) as u16);
+                    }
+                }
+            }
+            check(&BitmapStore::from_lsb0_bytes(&bytes, offset), &model);
+            let count = model.len() as u64;
+            check(
+                &BitmapStore::from_lsb0_bytes_unchecked(&bytes, offset, count),
+                &model,
+            );
+            let mut out = Vec::new();
+            bitmap_of(&model).write_le_bytes(&mut out);
+            assert_eq!(&out[offset..offset + len], &bytes[..]);
+        }
+    }
+
+    #[test]
+    fn constructors_and_validation() {
+        let full = BitmapStore::full();
+        assert_eq!(full.len(), 65536);
+        assert_eq!(full.min(), Some(0));
+        assert_eq!(full.max(), Some(u16::MAX));
+        assert_eq!(full.select(u16::MAX), Some(u16::MAX));
+        assert_eq!(full.rank(u16::MAX), 65536);
+        assert!(full.contains_range(0..=u16::MAX));
+        assert_eq!(full.count_runs(), 1);
+        assert!(full.internal_validate().is_ok());
+        let empty = BitmapStore::new();
+        assert_eq!(
+            (empty.min(), empty.max(), empty.select(0)),
+            (None, None, None)
+        );
+        assert!(empty.internal_validate().is_err());
+        let words = *full.as_words();
+        assert!(BitmapStore::try_from_words(65536, &words).is_ok());
+        assert!(BitmapStore::try_from_words(65535, &words).is_err());
+        let mut few = [0u64; BITMAP_WORDS];
+        few[3] = 0b1011;
+        assert!(BitmapStore::try_from_words(3, &few).is_err());
+        assert_eq!(BitmapStore::from_words_unchecked(3, &few).len(), 3);
+        assert_eq!(full.mem_size(), 8 + 8256);
     }
 }

@@ -43,6 +43,7 @@ mod tests;
 pub(crate) use self::array::ArrayStore;
 pub(crate) use self::bitmap::BitmapStore;
 pub(crate) use self::iter::{IntoIter, Iter};
+#[allow(unused_imports)] // `Interval` is part of the container API used by the top level.
 pub(crate) use self::run::{Interval, RunStore};
 
 /// Maximum cardinality of an array container.

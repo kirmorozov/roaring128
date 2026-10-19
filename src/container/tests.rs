@@ -288,10 +288,10 @@ pub(crate) fn check(c: &Container, model: &Model) {
         Container::Bitmap(b) => assert!(b.len() > ARRAY_LIMIT, "{c:?}: bitmap below the limit"),
         Container::Run(_) => {}
     }
-    if !model.is_empty() {
-        if let Err(e) = c.internal_validate() {
-            panic!("{c:?}: internal_validate failed: {e}");
-        }
+    if !model.is_empty()
+        && let Err(e) = c.internal_validate()
+    {
+        panic!("{c:?}: internal_validate failed: {e}");
     }
 }
 
@@ -589,6 +589,9 @@ fn union_model(a: &Model, b: &Model) -> Model {
     a | b
 }
 
+type BorrowedOp = fn(&mut Container, &Container);
+type OwnedOp = fn(&mut Container, Container);
+
 fn check_set_ops(rng: &mut Rng, ma: &Model, a: &Container, mb: &Model, b: &Container) {
     let union = union_model(ma, mb);
     let inter = ma & mb;
@@ -600,7 +603,7 @@ fn check_set_ops(rng: &mut Rng, ma: &Model, a: &Container, mb: &Model, b: &Conta
     check(&a.difference(b), &diff);
     check(&a.symmetric_difference(b), &xor);
 
-    let ops: [(fn(&mut Container, &Container), &Model); 4] = [
+    let ops: [(BorrowedOp, &Model); 4] = [
         (Container::union_with, &union),
         (Container::intersect_with, &inter),
         (Container::difference_with, &diff),
@@ -611,7 +614,7 @@ fn check_set_ops(rng: &mut Rng, ma: &Model, a: &Container, mb: &Model, b: &Conta
         op(&mut x, b);
         check(&x, expected);
     }
-    let owned_ops: [(fn(&mut Container, Container), &Model); 3] = [
+    let owned_ops: [(OwnedOp, &Model); 3] = [
         (Container::union_with_owned, &union),
         (Container::intersect_with_owned, &inter),
         (Container::symmetric_difference_with_owned, &xor),
@@ -850,8 +853,8 @@ fn decode_payload(kind: Kind, descriptor: u16, bytes: &[u8]) -> Vec<u16> {
         Kind::Bitmap => {
             assert_eq!(bytes.len(), BITMAP_BYTES);
             let mut out = Vec::new();
-            for (j, chunk) in bytes.chunks_exact(8).enumerate() {
-                let w = u64::from_le_bytes(chunk.try_into().unwrap());
+            for (j, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+                let w = u64::from_le_bytes(*chunk);
                 for i in 0..64 {
                     if w >> i & 1 == 1 {
                         out.push((64 * j + i) as u16);

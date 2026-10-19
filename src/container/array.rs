@@ -539,3 +539,223 @@ impl core::fmt::Debug for ArrayStore {
         f.debug_list().entries(self.as_slice()).finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::container::tests::{Model, Rng, cases, random_model, random_set};
+
+    #[track_caller]
+    fn check(a: &ArrayStore, model: &Model) {
+        assert!(a.as_slice().iter().eq(model.iter()), "{a:?}");
+        assert_eq!(a.len(), model.len() as u64);
+        assert!(is_strictly_increasing(a.as_slice()));
+    }
+
+    /// Store-level operations (no conversion to bitmaps, so the store may exceed the limit).
+    #[test]
+    fn operations_against_model() {
+        let mut rng = Rng::new(0xA001);
+        for _ in 0..cases(300) {
+            let n = rng.below(6000) as usize;
+            let mut model = random_set(&mut rng, n);
+            let values: Vec<u16> = model.iter().copied().collect();
+            let mut a = if rng.chance(50) {
+                ArrayStore::from_sorted_unchecked(&values)
+            } else {
+                ArrayStore::heap_from_slice(&values)
+            };
+            for _ in 0..cases(40) {
+                let was_heap = a.is_heap();
+                let bulk = match rng.below(9) {
+                    0 => {
+                        let v = rng.value(&model);
+                        assert_eq!(a.insert(v), model.insert(v));
+                        false
+                    }
+                    1 => {
+                        let v = rng.value(&model);
+                        assert_eq!(a.remove(v), model.remove(&v));
+                        if was_heap && a.len() as usize > POINT_REMOVAL_INLINE_LEN {
+                            assert!(a.is_heap(), "point removals keep the allocation");
+                        }
+                        false
+                    }
+                    2 => {
+                        let r = rng.range(&model);
+                        let added = r.clone().filter(|v| !model.contains(v)).count();
+                        model.extend(r.clone());
+                        assert_eq!(a.insert_range(r), added as u64);
+                        true
+                    }
+                    3 => {
+                        let r = rng.range(&model);
+                        let before = model.len();
+                        model.retain(|v| !r.contains(v));
+                        assert_eq!(a.remove_range(r), (before - model.len()) as u64);
+                        true
+                    }
+                    4 => {
+                        let v = rng.value(&model);
+                        let appended = model.last().is_none_or(|&m| m < v);
+                        if appended {
+                            model.insert(v);
+                        }
+                        assert_eq!(a.push(v), appended);
+                        false
+                    }
+                    5 => {
+                        let n = rng.below(model.len() as u64 + 2);
+                        for _ in 0..n {
+                            model.pop_first();
+                        }
+                        a.remove_smallest(n);
+                        true
+                    }
+                    6 => {
+                        let n = rng.below(model.len() as u64 + 2);
+                        for _ in 0..n {
+                            model.pop_last();
+                        }
+                        a.remove_biggest(n);
+                        true
+                    }
+                    7 => {
+                        let m = 1 + rng.below(5) as u16;
+                        model.retain(|v| v % m != 0);
+                        a.retain(|v| v % m != 0);
+                        true
+                    }
+                    _ => {
+                        let v = rng.value(&model);
+                        assert_eq!(a.contains(v), model.contains(&v));
+                        assert_eq!(a.rank(v), model.range(..=v).count() as u64);
+                        let n = rng.below(model.len() as u64 + 1) as u16;
+                        assert_eq!(a.select(n), model.iter().nth(n as usize).copied());
+                        let r = rng.range(&model);
+                        let inside = model.range(r.clone()).count();
+                        assert_eq!(a.range_cardinality(r.clone()), inside as u64);
+                        let full = inside == r.len();
+                        assert_eq!(a.contains_range(r), full);
+                        assert_eq!(a.min(), model.first().copied());
+                        assert_eq!(a.max(), model.last().copied());
+                        let values: Vec<u16> = model.iter().copied().collect();
+                        let runs = crate::container::tests::runs_of(&values).len() as u64;
+                        assert_eq!(a.count_runs(), runs);
+                        assert_eq!(a.byte_size(), 2 * model.len());
+                        false
+                    }
+                };
+                check(&a, &model);
+                if bulk && model.len() <= INLINE_CAPACITY {
+                    assert!(!a.is_heap(), "bulk operations store small arrays inline");
+                }
+                if !was_heap && model.len() > INLINE_CAPACITY {
+                    assert!(a.is_heap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn set_operations_against_model() {
+        let mut rng = Rng::new(0xA002);
+        for _ in 0..cases(300) {
+            let ma = random_model(&mut rng);
+            let mb = if rng.chance(30) {
+                ma.iter().copied().filter(|_| rng.chance(50)).collect()
+            } else {
+                random_model(&mut rng)
+            };
+            if ma.len() > 4096 || mb.len() > 4096 {
+                continue;
+            }
+            let va: Vec<u16> = ma.iter().copied().collect();
+            let vb: Vec<u16> = mb.iter().copied().collect();
+            let (a, b) = (
+                ArrayStore::from_sorted_unchecked(&va),
+                ArrayStore::from_sorted_unchecked(&vb),
+            );
+            check(&a.union(&b), &(&ma | &mb));
+            check(&a.intersection(&b), &(&ma & &mb));
+            check(&a.difference(&b), &(&ma - &mb));
+            check(&a.symmetric_difference(&b), &(&ma ^ &mb));
+            assert_eq!(a.intersection_len(&b), (&ma & &mb).len() as u64);
+            assert_eq!(a.is_disjoint(&b), ma.is_disjoint(&mb));
+            assert_eq!(a.is_subset(&b), ma.is_subset(&mb));
+            let bitmap = a.to_bitmap_store();
+            assert_eq!(bitmap.len(), a.len());
+            assert!(bitmap.to_array_store().as_slice() == a.as_slice());
+        }
+    }
+
+    #[test]
+    fn build_and_constructors() {
+        let a = ArrayStore::build(0, |_| 0);
+        assert!(a.is_empty() && !a.is_heap());
+        let a = ArrayStore::build(100, |out| {
+            for (i, slot) in out.iter_mut().take(5).enumerate() {
+                slot.write(i as u16 * 2);
+            }
+            5
+        });
+        assert_eq!(a.as_slice(), &[0, 2, 4, 6, 8]);
+        assert!(!a.is_heap());
+        let a = ArrayStore::build(100, |out| {
+            for (i, slot) in out.iter_mut().enumerate() {
+                slot.write(i as u16);
+            }
+            100
+        });
+        assert!(a.is_heap());
+        assert_eq!(a.len(), 100);
+        assert_eq!(ArrayStore::with_single(9).as_slice(), &[9]);
+        assert!(!ArrayStore::with_capacity(7).is_heap());
+        let mut a = ArrayStore::with_capacity(100);
+        assert!(a.is_heap());
+        for v in 0..100 {
+            a.push_unchecked(v * 2);
+        }
+        assert_eq!(a.len(), 100);
+        assert_eq!(a.mem_size(), 16 + 8 + 200);
+        assert_eq!(ArrayStore::default().len(), 0);
+        assert_eq!(alloc::format!("{:?}", ArrayStore::with_single(3)), "[3]");
+        assert!(is_strictly_increasing(&[]));
+        assert!(is_strictly_increasing(&[5]));
+        let long: Vec<u16> = (0..1000).collect();
+        assert!(is_strictly_increasing(&long));
+        for i in [1, 255, 256, 257, 999] {
+            let mut bad = long.clone();
+            bad[i] = bad[i - 1];
+            assert!(!is_strictly_increasing(&bad), "{i}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "array kernel exceeded its bound")]
+    fn build_rejects_overlong_results() {
+        ArrayStore::build(3, |_| 4);
+    }
+
+    #[test]
+    fn edge_values() {
+        let mut a = ArrayStore::new();
+        assert!(a.insert(u16::MAX));
+        assert!(a.insert(0));
+        assert!(!a.push(u16::MAX));
+        assert_eq!(a.insert_range(65530..=65535), 5);
+        assert_eq!(a.as_slice(), &[0, 65530, 65531, 65532, 65533, 65534, 65535]);
+        assert!(a.contains_range(65530..=65535));
+        assert!(!a.contains_range(65529..=65535));
+        assert_eq!(a.count_runs(), 2);
+        assert_eq!(a.rank(u16::MAX), 7);
+        assert_eq!(a.remove_range(0..=u16::MAX), 7);
+        assert!(a.is_empty());
+        assert_eq!(a.count_runs(), 0);
+        assert_eq!(a.insert_range(0..=4095), 4096);
+        assert!(a.is_heap());
+        assert_eq!(a.count_runs(), 1);
+    }
+}

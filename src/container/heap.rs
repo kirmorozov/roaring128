@@ -39,6 +39,7 @@ unsafe impl<T: Copy + Sync> Sync for HeapVec<T> {}
 
 const _: () = assert!(size_of::<HeapVec<u16>>() == 8);
 
+#[allow(dead_code)] // General-purpose vector API; not every method is used by every store.
 impl<T: Copy> HeapVec<T> {
     /// Offset of the first element from the start of the block.
     const DATA_OFFSET: usize = {
@@ -563,5 +564,63 @@ mod tests {
         assert_eq!(v.as_slice()[50], Pair(49, 50));
         assert_eq!(v.remove(1), Pair(0, 1));
         assert_eq!(v.len(), 50);
+    }
+
+    #[test]
+    fn splice_iter_against_vec() {
+        let mut v = HeapVec::<u16>::new();
+        let mut model: Vec<u16> = Vec::new();
+        v.splice_iter(0..0, 0..0u16);
+        assert_eq!(v.capacity(), 0);
+        let mut rng = crate::container::tests::Rng::new(0x4EA9);
+        for _ in 0..crate::container::tests::cases(400) {
+            let len = model.len();
+            let start = rng.below(len as u64 + 1) as usize;
+            let end = start + rng.below((len - start) as u64 + 1) as usize;
+            let max = if rng.chance(20) { 300 } else { 12 };
+            let count = rng.below(max) as u16;
+            let base = rng.u16() / 2;
+            v.splice_iter(start..end, base..base + count);
+            model.splice(start..end, base..base + count);
+            assert_eq!(v.as_slice(), &model[..]);
+            assert!(v.capacity() >= v.len());
+        }
+        let len = v.len();
+        v.splice_iter(0..len, core::iter::empty());
+        assert!(v.is_empty());
+    }
+
+    /// An iterator whose reported length is wrong.
+    struct Liar(u16);
+
+    impl Iterator for Liar {
+        type Item = u16;
+        fn next(&mut self) -> Option<u16> {
+            self.0 = self.0.checked_sub(1)?;
+            Some(self.0)
+        }
+    }
+
+    impl ExactSizeIterator for Liar {
+        fn len(&self) -> usize {
+            self.0 as usize + 5
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn splice_iter_with_a_lying_iterator_keeps_the_vector_valid() {
+        let mut v = HeapVec::from_slice(&[1u16, 2, 3, 4, 5, 6]);
+        let result = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            v.splice_iter(1..3, Liar(2));
+        }));
+        assert!(result.is_err());
+        // The old length is kept and every element below it is initialized (Miri checks it).
+        assert_eq!(v.len(), 6);
+        let sum: u32 = v.as_slice().iter().map(|&x| x as u32).sum();
+        assert!(sum > 0);
+        v.clear();
+        v.extend_from_slice(&[7, 8]);
+        assert_eq!(v.as_slice(), &[7, 8]);
     }
 }
