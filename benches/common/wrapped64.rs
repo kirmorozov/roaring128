@@ -147,31 +147,40 @@ impl Wrapped64 {
         })
     }
 
-    /// Builds the set from strictly increasing values: one treemap per run of equal high halves
-    /// (filled with `try_push`), the outer map is bulk-built from the sorted entries.
+    /// Builds the set from strictly increasing values: one `RoaringTreemap::from_sorted_iter`
+    /// per run of equal high halves, the outer map is bulk-built from the sorted entries.
+    ///
+    /// (Per-value `RoaringTreemap::try_push` would be up to 4x slower on dense data: `roaring`
+    /// 0.11 recomputes the maximum of a bitmap container on every call.)
     ///
     /// Returns `Err(n)` if the input is not strictly increasing after `n` values.
     pub fn from_sorted_iter<I: IntoIterator<Item = u128>>(values: I) -> Result<Self, u64> {
+        let mut values = values.into_iter().peekable();
         let mut entries: Vec<(u64, RoaringTreemap)> = Vec::new();
-        let mut prev: Option<u128> = None;
-        for (i, value) in values.into_iter().enumerate() {
-            if prev.is_some_and(|p| value <= p) {
-                return Err(i as u64);
+        let mut count = 0u64;
+        while let Some(&first) = values.peek() {
+            let hi = split(first).0;
+            if entries.last().is_some_and(|&(k, _)| hi <= k) {
+                return Err(count);
             }
-            prev = Some(value);
-            let (hi, lo) = split(value);
-            match entries.last_mut() {
-                Some((k, t)) if *k == hi => t.try_push(lo).expect("sorted input"),
-                _ => {
-                    let mut t = RoaringTreemap::new();
-                    t.try_push(lo).expect("empty treemap");
-                    entries.push((hi, t));
-                }
-            }
+            let lows =
+                std::iter::from_fn(|| values.next_if(|&v| split(v).0 == hi)).map(|v| split(v).1);
+            let t = RoaringTreemap::from_sorted_iter(lows).map_err(|e| count + e.valid_until())?;
+            count += t.len();
+            entries.push((hi, t));
         }
         Ok(Wrapped64 {
             map: entries.into_iter().collect(),
         })
+    }
+
+    /// Builds the set from values in any order: sort a copy, then [`Wrapped64::from_sorted_iter`]
+    /// (what a user does for a batch rather than inserting value by value).
+    pub fn from_unsorted(values: &[u128]) -> Self {
+        let mut v = values.to_vec();
+        v.sort_unstable();
+        v.dedup();
+        Wrapped64::from_sorted_iter(v).expect("sorted")
     }
 
     pub fn optimize(&mut self) -> bool {
@@ -248,13 +257,16 @@ impl Wrapped64 {
         acc
     }
 
-    /// Intersection of many sets: fold with `&=` starting from the first one.
+    /// Intersection of many sets: `&a & &b`, then fold with `&=`.
     pub fn intersection_many<'a, I: IntoIterator<Item = &'a Wrapped64>>(sets: I) -> Wrapped64 {
         let mut it = sets.into_iter();
         let Some(first) = it.next() else {
             return Wrapped64::new();
         };
-        let mut acc = first.clone();
+        let mut acc = match it.next() {
+            Some(second) => first & second,
+            None => first.clone(),
+        };
         for s in it {
             if acc.is_empty() {
                 break;
@@ -384,6 +396,11 @@ impl BitXor<&Wrapped64> for &Wrapped64 {
 
 impl BitAndAssign<&Wrapped64> for Wrapped64 {
     fn bitand_assign(&mut self, rhs: &Wrapped64) {
+        if rhs.map.len() * PROBE_RATIO <= self.map.len() {
+            // Much smaller right-hand side: rebuild from its keys instead of visiting ours.
+            *self = &*self & rhs;
+            return;
+        }
         self.map.retain(|k, a| match rhs.map.get(k) {
             Some(b) => {
                 *a &= b;
@@ -409,6 +426,17 @@ impl BitOrAssign<&Wrapped64> for Wrapped64 {
 
 impl SubAssign<&Wrapped64> for Wrapped64 {
     fn sub_assign(&mut self, rhs: &Wrapped64) {
+        if self.map.len() < rhs.map.len() {
+            // Visit the smaller side: our keys, probing the right-hand side.
+            self.map.retain(|k, a| match rhs.map.get(k) {
+                Some(b) => {
+                    *a -= b;
+                    !a.is_empty()
+                }
+                None => true,
+            });
+            return;
+        }
         for (&k, b) in &rhs.map {
             if let Entry::Occupied(mut e) = self.map.entry(k) {
                 *e.get_mut() -= b;

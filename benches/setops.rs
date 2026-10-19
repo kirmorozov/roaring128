@@ -3,10 +3,12 @@
 //! others).
 //!
 //! Pairs: random UUID v4 sets with 50% and 1% overlap and skewed sizes (1M vs 1k), UUID v7 with
-//! 50% overlap, two independent samples of each dense distribution, the mixed workload, and two
-//! `u64` workloads for the direct `RoaringTreemap` comparison.
+//! 50% overlap, two independent samples of each dense distribution (the long-runs one optimized
+//! into run containers, `_opt`), the mixed workload, and two `u64` workloads for the direct
+//! `RoaringTreemap` comparison.
 //!
-//! Benchmark ids are `<operation>/<implementation>/<pair>`.
+//! Implementations: `roaring128`, `wrapped64`, `btreeset`, `sortedvec` and, for `u64` data,
+//! `treemap`; `BENCH_IMPL` selects them. Benchmark ids are `<operation>/<implementation>/<pair>`.
 
 mod common;
 
@@ -70,6 +72,16 @@ fn bench(
 const ALGEBRA: u32 = 1;
 const IN_PLACE: u32 = 2;
 const SUBSET: u32 = 4;
+/// Operands are optimized (run containers where smaller); the pair name gets `_opt`.
+const OPT: u32 = 8;
+
+fn built<S: Set128>(w: &Workload, flags: u32) -> Built<'_, S> {
+    if flags & OPT != 0 {
+        Built::optimized(w)
+    } else {
+        Built::new(w)
+    }
+}
 
 /// Every pairwise measurement for one implementation; its structures are dropped before the
 /// next implementation starts.
@@ -79,10 +91,13 @@ fn pair<S: SetAlgebra + SetAlgebraInPlace>(
     sub: &Workload,
     flags: u32,
 ) {
+    if !enabled::<S>() {
+        return;
+    }
     let name = p.name.as_str();
     let id = || BenchmarkId::new(S::NAME, name);
     let elements = p.a.len() + p.b.len();
-    let (a, b) = (Built::<S>::new(&p.a), Built::<S>::new(&p.b));
+    let (a, b) = (built::<S>(&p.a, flags), built::<S>(&p.b, flags));
     if flags & ALGEBRA != 0 {
         for op in Op::ALL {
             bench(c, op.name(), elements, id(), |bench| {
@@ -124,7 +139,7 @@ fn pair<S: SetAlgebra + SetAlgebraInPlace>(
         }
     }
     if flags & SUBSET != 0 {
-        let sub_built = Built::<S>::new(sub);
+        let sub_built = built::<S>(sub, flags);
         let sub_id = BenchmarkId::new(S::NAME, &sub.name);
         bench(c, "is_subset", sub.len() + p.a.len(), sub_id, |bench| {
             let (x, y) = (sub_built.get(), a.get());
@@ -157,9 +172,12 @@ fn pairs(c: &mut Criterion) {
         ),
         (
             || Pair::split(Kind::UuidV7, K500, K500, K500 / 2, 103),
-            ALGEBRA,
+            ALGEBRA | IN_PLACE | SUBSET,
         ),
-        (|| Pair::independent(Kind::DenseRuns, M1, 104), ALGEBRA),
+        (
+            || Pair::independent(Kind::DenseRuns, M1, 104),
+            ALGEBRA | IN_PLACE | OPT,
+        ),
         (
             || Pair::independent(Kind::DenseGaps50, M1, 105),
             ALGEBRA | IN_PLACE | SUBSET,
@@ -179,7 +197,20 @@ fn pairs(c: &mut Criterion) {
         ),
     ];
     for (make, flags) in specs {
-        let p = make();
+        let mut p = make();
+        let wanted = if p.a.kind.fits_u64() {
+            enabled::<R128>() || enabled::<Tm>()
+        } else {
+            [R128::NAME, Wrapped64::NAME, Bts::NAME, Sv::NAME]
+                .iter()
+                .any(|&i| selected(i))
+        };
+        if !wanted {
+            continue;
+        }
+        if flags & OPT != 0 {
+            p.name.push_str("_opt");
+        }
         // A random half of `a`, or a 1k subset of the big side of a skewed pair.
         let fraction = if p.b.len() * 10 < p.a.len() {
             p.b.len() as f64 / p.a.len() as f64
@@ -194,14 +225,19 @@ fn pairs(c: &mut Criterion) {
         } else {
             pair::<Wrapped64>(c, &p, &sub, flags);
             pair::<Bts>(c, &p, &sub, flags);
+            pair::<Sv>(c, &p, &sub, flags);
         }
     }
 }
 
-fn many<S: SetAlgebra>(c: &mut Criterion, ws: &[Workload]) {
-    let built: Vec<Built<'_, S>> = ws.iter().map(Built::new).collect();
+fn many<S: SetAlgebra>(c: &mut Criterion, ws: &[Workload], flags: u32) {
+    if !enabled::<S>() {
+        return;
+    }
+    let built: Vec<Built<'_, S>> = ws.iter().map(|w| built(w, flags)).collect();
     let elements: usize = ws.iter().map(Workload::len).sum();
-    let id = BenchmarkId::new(S::NAME, &ws[0].name);
+    let suffix = if flags & OPT != 0 { "_opt" } else { "" };
+    let id = BenchmarkId::new(S::NAME, format!("{}{suffix}", ws[0].name));
     bench(c, "multi_union16", elements, id.clone(), |b| {
         let refs: Vec<&S> = built.iter().map(Built::get).collect();
         time_build(b, || S::union_many(&refs))
@@ -213,28 +249,31 @@ fn many<S: SetAlgebra>(c: &mut Criterion, ws: &[Workload]) {
 }
 
 fn multi(c: &mut Criterion) {
-    let specs: [fn() -> Vec<Workload>; 3] = [
-        || many_with_core(Kind::UuidV4, 16, 100_000, 10_000, 200),
-        || many_independent(Kind::DenseRuns, 16, 100_000, 201),
-        || many_independent(Kind::DenseRunsU64, 16, 100_000, 202),
+    type Make = fn() -> Vec<Workload>;
+    let specs: [(Make, u32); 3] = [
+        (|| many_with_core(Kind::UuidV4, 16, 100_000, 10_000, 200), 0),
+        (|| many_independent(Kind::DenseRuns, 16, 100_000, 201), OPT),
+        (
+            || many_independent(Kind::DenseRunsU64, 16, 100_000, 202),
+            OPT,
+        ),
     ];
-    for make in specs {
+    for (make, flags) in specs {
         let ws = make();
-        many::<R128>(c, &ws);
+        many::<R128>(c, &ws, flags);
         if ws[0].kind.fits_u64() {
-            many::<Tm>(c, &ws);
+            many::<Tm>(c, &ws, flags);
         } else {
-            many::<Wrapped64>(c, &ws);
-            many::<Bts>(c, &ws);
+            many::<Wrapped64>(c, &ws, flags);
+            many::<Bts>(c, &ws, flags);
+            many::<Sv>(c, &ws, flags);
         }
     }
 }
 
 fn main() {
     prelude("setops");
-    let mut c = Criterion::default()
-        .nresamples(20_000)
-        .configure_from_args();
+    let mut c = common::criterion();
     pairs(&mut c);
     multi(&mut c);
     c.final_summary();

@@ -12,6 +12,9 @@
 //! * `ser B/v`: serialized bytes per value as built and after `optimize()` (roaring types).
 //!
 //! Run: `cargo bench --bench memory [-- <workload substring>]`.
+//!
+//! `cargo bench --bench memory -- --probe` instead prints the SIMD backend roaring128 selects on
+//! this CPU (like `.github/ci/backend-probe`), for the run metadata.
 
 mod common;
 
@@ -244,11 +247,40 @@ fn composition(w: &Workload) -> String {
     r.unwrap_or_else(|_| format!("| {} | (roaring128 unimplemented) |||| ", w.name))
 }
 
-fn main() {
-    let filter: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|a| !a.starts_with("--"))
+/// Prints the architecture, the backends this CPU supports and the one roaring128 selects.
+fn probe() {
+    use roaring128::{SimdBackend, simd_backend};
+    let supported: Vec<String> = [SimdBackend::Avx2, SimdBackend::Avx512, SimdBackend::Neon]
+        .iter()
+        .map(|b| {
+            format!(
+                "{}={}",
+                b.name(),
+                if b.is_supported() { "yes" } else { "no" }
+            )
+        })
         .collect();
+    let forced = std::env::var("ROARING128_FORCE_BACKEND").unwrap_or_default();
+    println!(
+        "{} (arch {}, supported: {}{})",
+        simd_backend().name(),
+        std::env::consts::ARCH,
+        supported.join(" "),
+        if forced.is_empty() {
+            String::new()
+        } else {
+            format!(", ROARING128_FORCE_BACKEND={forced}")
+        }
+    );
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--probe") {
+        probe();
+        return;
+    }
+    let filter: Vec<String> = args.into_iter().filter(|a| !a.starts_with("--")).collect();
     println!("== roaring128 benches: memory ==");
     println!("{}", environment());
     println!(
@@ -292,7 +324,9 @@ fn main() {
         } else {
             print_row(w, "wrapped64", &row_for_serial::<Wrapped64>(w));
             print_row(w, "btreeset", &row_for::<Bts>(w));
+            print_row(w, "sortedvec", &row_for_serial::<Sv>(w));
             print_row(w, "hashset", &row_for::<Hs>(w));
+            print_row(w, "hashset_fx", &row_for::<HsFx>(w));
         }
     }
     println!();
@@ -307,6 +341,6 @@ fn main() {
     }
     println!();
     println!(
-        "Reference points: a sorted Vec<u128> is 16 B/v; a raw little-endian dump is 16 ser B/v."
+        "`sortedvec` is built by sorting (its insert column is a sort build); its serialized form is a raw little-endian dump."
     );
 }

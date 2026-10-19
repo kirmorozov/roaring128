@@ -1,7 +1,9 @@
-//! Self-check run before the benchmarks: every implementation must compute the same results as
-//! a plain sorted-vector reference on small instances of every workload, otherwise the timings
-//! would compare different work. roaring128 is checked under `catch_unwind` so that the baseline
-//! benchmarks can run while its implementation is still `todo!()`.
+//! Self-check run before the benchmarks: every selected implementation (see `BENCH_IMPL`) must
+//! compute the same results as a plain sorted-slice reference on small instances of every
+//! workload shape, otherwise the timings would compare different work. Checking each
+//! implementation against the same reference cross-checks them all, also when each runs in its
+//! own process. roaring128 is checked under `catch_unwind` so that the baseline benchmarks can
+//! run while its implementation is still `todo!()`.
 
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
@@ -67,6 +69,15 @@ fn xor_ref(a: &[u128], b: &[u128]) -> Vec<u128> {
     merge(a, b, |x, y| x != y)
 }
 
+/// Insert build, optionally followed by `optimize()` (run containers for the roaring types).
+fn build<S: Set128>(w: &Workload, optimize: bool) -> S {
+    let mut s = S::build_insert(&w.shuffled);
+    if optimize {
+        s.optimize();
+    }
+    s
+}
+
 pub fn check_set<S: Set128>(w: &Workload) -> Res {
     let n = w.len() as u64;
     let name = &w.name;
@@ -83,6 +94,12 @@ pub fn check_set<S: Set128>(w: &Workload) -> Res {
         "{name}: duplicate insert returned true"
     );
     ensure!(dup.len() == n, "{name}: duplicate insert changed len");
+    let mut with_dups = w.shuffled.clone();
+    with_dups.extend_from_slice(&w.shuffled[..w.len().min(100)]);
+    ensure!(
+        S::build_from_iter(&with_dups).to_sorted_vec() == w.sorted,
+        "{name}: build_from_iter differs"
+    );
     if let Some(sorted) = S::build_sorted(&w.sorted) {
         ensure!(
             sorted.to_sorted_vec() == w.sorted,
@@ -102,7 +119,12 @@ pub fn check_set<S: Set128>(w: &Workload) -> Res {
         }
     }
     let mut r = s.clone();
-    let half = w.shuffled.len() / 2;
+    // Per-value removal is O(n) in a sorted vector: fewer of them.
+    let half = if S::POINT_UPDATES {
+        w.len() / 2
+    } else {
+        w.len().min(400) / 2
+    };
     for &v in &w.shuffled[..half] {
         ensure!(r.remove(v), "{name}: remove({v:#x}) returned false");
     }
@@ -117,7 +139,7 @@ pub fn check_set<S: Set128>(w: &Workload) -> Res {
         "{name}: contents after removals differ"
     );
     ensure!(r.len() == rest.len() as u64, "{name}: len after removals");
-    let mut o = s.clone();
+    let mut o = s;
     o.optimize();
     ensure!(
         o.to_sorted_vec() == w.sorted,
@@ -170,13 +192,10 @@ pub fn check_serial<S: Serial>(w: &Workload) -> Res {
     Ok(())
 }
 
-pub fn check_algebra<S: SetAlgebra>(p: &Pair) -> Res {
-    let (a, b) = (
-        S::build_insert(&p.a.shuffled),
-        S::build_insert(&p.b.shuffled),
-    );
+pub fn check_algebra<S: SetAlgebra>(p: &Pair, optimize: bool) -> Res {
+    let (a, b): (S, S) = (build(&p.a, optimize), build(&p.b, optimize));
     let (ra, rb) = (&p.a.sorted, &p.b.sorted);
-    let name = &p.name;
+    let name = &format!("{}{}", p.name, if optimize { " (optimized)" } else { "" });
     ensure!(a.and(&b).to_sorted_vec() == and_ref(ra, rb), "{name}: and");
     ensure!(a.or(&b).to_sorted_vec() == or_ref(ra, rb), "{name}: or");
     ensure!(a.sub(&b).to_sorted_vec() == sub_ref(ra, rb), "{name}: sub");
@@ -192,7 +211,7 @@ pub fn check_algebra<S: SetAlgebra>(p: &Pair) -> Res {
         "{name}: intersection_len (reversed)"
     );
     let sub = p.a.subset(0.5, 7);
-    let s = S::build_insert(&sub.shuffled);
+    let s: S = build(&sub, optimize);
     ensure!(
         s.is_subset(&a),
         "{name}: is_subset(subset, a) returned false"
@@ -211,13 +230,10 @@ struct Case<S>(
     fn(&[u128], &[u128]) -> Vec<u128>,
 );
 
-pub fn check_in_place<S: SetAlgebraInPlace>(p: &Pair) -> Res {
-    let (a, b) = (
-        S::build_insert(&p.a.shuffled),
-        S::build_insert(&p.b.shuffled),
-    );
+pub fn check_in_place<S: SetAlgebraInPlace>(p: &Pair, optimize: bool) -> Res {
+    let (a, b): (S, S) = (build(&p.a, optimize), build(&p.b, optimize));
     let (ra, rb) = (&p.a.sorted, &p.b.sorted);
-    let name = &p.name;
+    let name = &format!("{}{}", p.name, if optimize { " (optimized)" } else { "" });
     let cases: [Case<S>; 4] = [
         Case("and", S::and_assign, and_ref),
         Case("or", S::or_assign, or_ref),
@@ -240,8 +256,8 @@ pub fn check_in_place<S: SetAlgebraInPlace>(p: &Pair) -> Res {
     Ok(())
 }
 
-pub fn check_many<S: SetAlgebra>(ws: &[Workload]) -> Res {
-    let sets: Vec<S> = ws.iter().map(|w| S::build_insert(&w.shuffled)).collect();
+pub fn check_many<S: SetAlgebra>(ws: &[Workload], optimize: bool) -> Res {
+    let sets: Vec<S> = ws.iter().map(|w| build(w, optimize)).collect();
     let refs: Vec<&S> = sets.iter().collect();
     let mut union = Vec::new();
     let mut inter = ws[0].sorted.clone();
@@ -297,6 +313,11 @@ impl Fixtures {
     }
 }
 
+/// Workloads whose benchmarks also use optimized (run container) operands.
+fn runs(k: Kind) -> bool {
+    matches!(k, Kind::DenseRuns | Kind::DenseRunsU64)
+}
+
 /// Checks one implementation; `u64_only` restricts it to workloads that fit in `u64`.
 fn check_impl<S: SetAlgebra + SetAlgebraInPlace + Ranked + Serial>(
     fx: &Fixtures,
@@ -309,11 +330,16 @@ fn check_impl<S: SetAlgebra + SetAlgebraInPlace + Ranked + Serial>(
         check_serial::<S>(w)?;
     }
     for p in fx.pairs.iter().filter(|p| ok(p.a.kind)) {
-        check_algebra::<S>(p)?;
-        check_in_place::<S>(p)?;
+        for optimize in [false, true] {
+            if optimize && !runs(p.a.kind) {
+                continue;
+            }
+            check_algebra::<S>(p, optimize)?;
+            check_in_place::<S>(p, optimize)?;
+        }
     }
     for ws in fx.many.iter().filter(|ws| ok(ws[0].kind)) {
-        check_many::<S>(ws)?;
+        check_many::<S>(ws, runs(ws[0].kind))?;
     }
     Ok(())
 }
@@ -321,16 +347,19 @@ fn check_impl<S: SetAlgebra + SetAlgebraInPlace + Ranked + Serial>(
 fn check_btreeset(fx: &Fixtures) -> Res {
     for w in &fx.sets {
         check_set::<Bts>(w)?;
-        check_set::<Hs>(w)?;
     }
     for p in &fx.pairs {
-        check_algebra::<Bts>(p)?;
-        check_in_place::<Bts>(p)?;
+        check_algebra::<Bts>(p, false)?;
+        check_in_place::<Bts>(p, false)?;
     }
     for ws in &fx.many {
-        check_many::<Bts>(ws)?;
+        check_many::<Bts>(ws, false)?;
     }
     Ok(())
+}
+
+fn check_sets_only<S: Set128>(fx: &Fixtures) -> Res {
+    fx.sets.iter().try_for_each(check_set::<S>)
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {
@@ -341,36 +370,53 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "<non-string panic>".to_owned())
 }
 
-/// Runs every check. Baseline failures and roaring128 mismatches panic; a roaring128 that is
-/// not implemented yet (`todo!()`) is reported and its benchmarks will panic when selected.
+/// Checks the selected baselines (a failure panics), then roaring128 if selected: a mismatch
+/// panics, an implementation that is not there yet (`todo!()`) is reported and its benchmarks
+/// will panic when they run.
 pub fn run_all() -> String {
-    let fx = Fixtures::new();
-    let baselines = check_impl::<Wrapped64>(&fx, false)
-        .and_then(|()| check_impl::<Tm>(&fx, true))
-        .and_then(|()| check_btreeset(&fx));
-    if let Err(e) = baselines {
-        panic!("baseline self-check failed: {e}");
+    type Check = fn(&Fixtures) -> Res;
+    let baselines: [(&str, Check); 6] = [
+        (Wrapped64::NAME, |fx| check_impl::<Wrapped64>(fx, false)),
+        (Tm::NAME, |fx| check_impl::<Tm>(fx, true)),
+        (Sv::NAME, |fx| check_impl::<Sv>(fx, false)),
+        (Bts::NAME, check_btreeset),
+        (Hs::NAME, check_sets_only::<Hs>),
+        (HsFx::NAME, check_sets_only::<HsFx>),
+    ];
+    let wanted: Vec<_> = baselines.iter().filter(|(n, _)| selected(n)).collect();
+    if wanted.is_empty() && !selected(R128::NAME) {
+        return "nothing selected".to_owned();
     }
-
-    let hook = panic::take_hook();
-    panic::set_hook(Box::new(|_| {}));
-    let r128 = panic::catch_unwind(AssertUnwindSafe(|| check_impl::<R128>(&fx, false)));
-    panic::set_hook(hook);
-    let r128 = match r128 {
-        Ok(Ok(())) => "OK".to_owned(),
-        Ok(Err(e)) => {
-            panic!("roaring128 self-check failed: {e} (set BENCH_SKIP_CHECK=1 to bench anyway)")
+    let fx = Fixtures::new();
+    let mut parts = Vec::new();
+    for (name, check) in wanted {
+        if let Err(e) = check(&fx) {
+            panic!("{name} self-check failed: {e}");
         }
-        Err(payload) => {
-            let msg = panic_message(payload.as_ref());
-            if msg.contains("not yet implemented") || msg.contains("not implemented") {
-                "NOT IMPLEMENTED (reached todo!()); filter its benchmarks out".to_owned()
-            } else {
-                panic!(
-                    "roaring128 panicked during the self-check: {msg} (set BENCH_SKIP_CHECK=1 to bench anyway)"
-                )
+        parts.push(format!("{name} OK"));
+    }
+    if selected(R128::NAME) {
+        let hook = panic::take_hook();
+        panic::set_hook(Box::new(|_| {}));
+        let r128 = panic::catch_unwind(AssertUnwindSafe(|| check_impl::<R128>(&fx, false)));
+        panic::set_hook(hook);
+        let status = match r128 {
+            Ok(Ok(())) => "OK".to_owned(),
+            Ok(Err(e)) => {
+                panic!("roaring128 self-check failed: {e} (set BENCH_SKIP_CHECK=1 to bench anyway)")
             }
-        }
-    };
-    format!("baselines OK (wrapped64, treemap, btreeset, hashset) | roaring128 {r128}")
+            Err(payload) => {
+                let msg = panic_message(payload.as_ref());
+                if msg.contains("not yet implemented") || msg.contains("not implemented") {
+                    "NOT IMPLEMENTED (reached todo!()); filter its benchmarks out".to_owned()
+                } else {
+                    panic!(
+                        "roaring128 panicked during the self-check: {msg} (set BENCH_SKIP_CHECK=1 to bench anyway)"
+                    )
+                }
+            }
+        };
+        parts.push(format!("roaring128 {status}"));
+    }
+    parts.join(" | ")
 }

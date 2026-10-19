@@ -61,7 +61,8 @@ fn uuid_bits(random: u128, version: u128) -> u128 {
 pub enum Kind {
     /// Random UUID v4 (122 random bits): virtually one value per 112-bit key.
     UuidV4,
-    /// UUID v7: 48-bit ms timestamp (about 4 values per ms), version/variant, random rest.
+    /// UUID v7 as `uuid::Uuid::now_v7()` makes them: 48-bit ms timestamp (about 4 values per
+    /// ms), a per-millisecond counter, random low bits. See [`uuid_v7`].
     UuidV7,
     /// `(tenant << 64) | seq` with long sequential runs (1k..61k values, gaps of 1..4000):
     /// bitmap containers after inserts, run containers after `optimize`.
@@ -147,17 +148,34 @@ impl Kind {
     }
 }
 
+/// UUID v7 laid out like the `uuid` crate's `Uuid::now_v7()` (RFC 9562 method 1, `ContextV7`):
+/// a 48-bit ms timestamp, a 42-bit counter reseeded with 41 random bits every millisecond and
+/// incremented within it (its top 12 bits fill `rand_a`, the other 30 the top of `rand_b`), then
+/// 32 random bits. About 4 values per millisecond, so the values of one millisecond share their
+/// high 64 bits (one `RoaringTreemap` per millisecond in the wrapped baseline) but not their
+/// 112-bit roaring128 key.
 fn uuid_v7(n: usize, rng: &mut Rng) -> Vec<u128> {
-    // 2025-10-09T..., in ms. About 4 values per millisecond.
+    const COUNTER_LOW_BITS: u32 = 30;
+    // 2025-10-09T..., in ms.
     let mut ts: u128 = 1_760_000_000_000;
+    let mut counter = rng.next_u64() >> 23;
     (0..n)
         .map(|_| {
             if rng.below(4) == 0 {
                 ts += 1;
+                counter = rng.next_u64() >> 23;
+            } else {
+                counter += 1;
             }
-            let rand_a = rng.below(1 << 12) as u128;
-            let rand_b = (rng.next_u64() >> 2) as u128;
-            (ts << 80) | (7 << VERSION_SHIFT) | (rand_a << 64) | (0b10 << VARIANT_SHIFT) | rand_b
+            let rand_a = (counter >> COUNTER_LOW_BITS) as u128;
+            let counter_low = (counter & ((1 << COUNTER_LOW_BITS) - 1)) as u128;
+            let random = rng.next_u64() as u32 as u128;
+            (ts << 80)
+                | (7 << VERSION_SHIFT)
+                | (rand_a << 64)
+                | (0b10 << VARIANT_SHIFT)
+                | (counter_low << 32)
+                | random
         })
         .collect()
 }
