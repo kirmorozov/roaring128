@@ -285,11 +285,33 @@ Minimum supported Rust version: 1.91 (edition 2024).
 
 ## Benchmarks
 
-Results are not published yet; the first full run is in progress. The harness lives in
-[`benches/`](benches/README.md): it times `RoaringBitmap128` against a wrapped-roaring64 baseline
-(`BTreeMap<u64, RoaringTreemap>`), `BTreeSet<u128>`, a sorted `Vec<u128>`, `HashSet<u128>`
-(default and FxHash) and `roaring::RoaringTreemap` (for data that fits in `u64`) across 10k–1M
-value UUID and dense workloads, and prints wins *and* losses in `report.md`.
+The harness lives in [`benches/`](benches/README.md): it times `RoaringBitmap128` against a
+wrapped-roaring64 baseline (`BTreeMap<u64, RoaringTreemap>`), `BTreeSet<u128>`, a sorted
+`Vec<u128>`, `HashSet<u128>` (default and FxHash) and `roaring::RoaringTreemap` (for data that
+fits in `u64`) across 10k–1M value UUID and dense workloads, and prints wins *and* losses in
+`report.md`. The first full run is done (main at `46cbf87`, 2026-11-01; AMD Ryzen 7 5825U, rustc
+1.99.1, AVX2 backend; full report in `target/bench-results/latest/`). Headline: geometric-mean
+speedup vs each baseline family, with wins/ties/losses where the confidence intervals do not
+overlap:
+
+| vs | geometric mean | wins / ties / losses |
+|---|---:|---:|
+| wrapped64 | 2.37x | 117 / 0 / 25 |
+| `RoaringTreemap` | 2.05x | 29 / 0 / 12 |
+| best ordered (`BTreeSet`, sorted `Vec`) | 1.16x | 51 / 2 / 95 |
+| best hash (`HashSet`, FxHash) | 0.22x | 8 / 0 / 39 |
+
+Highlights:
+- Bulk set operations: `and` 2.5x, `or` 3.4x, `sub` 4.1x, `xor` 3.7x vs wrapped64; per-op
+  geometric means of 1.6–14x vs the best ordered baseline, and `multi_union16` 546x faster than a
+  sorted `Vec` on dense runs.
+- Memory: 34–51 heap bytes/value on the sparse 1M-value UUID workloads (522–539 for wrapped64 on
+  uuid_v4, 265–269 on uuid_v7); the closest ordered baselines are 16 B/v (sorted `Vec`) and
+  18–27 B/v (`BTreeSet`), and on dense workloads everything drops to ~0.2 B/v.
+- Iteration and ranges: 8.7x / 7.8x geometric mean vs wrapped64 (`iter` up to 16x on dense).
+- Losses: FxHash `HashSet` is up to ~50x faster on `contains` for 1M UUIDs, a pre-sorted `Vec` is
+  30–50x faster on `from_sorted`, and sorted `Vec` wins most 1M-value UUID set operations — that
+  is the 0.22x vs best hash above.
 
 ## Status and roadmap
 
@@ -297,7 +319,7 @@ value UUID and dense workloads, and prints wins *and* losses in `report.md`.
 - [x] SIMD dispatch, scalar reference kernels, CI (x86_64, AVX-512 under SDE, ARM64, Miri)
 - [x] Container and bitmap implementation
 - [x] Specialized AVX2 / AVX-512 / NEON kernels
-- [ ] Benchmarks (harness in [`benches/`](benches/); first full run in progress)
+- [x] Benchmarks (harness in [`benches/`](benches/); first full run published above)
 - [ ] First release on crates.io
 
 ## License
