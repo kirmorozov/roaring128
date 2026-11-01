@@ -54,16 +54,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # TODO(lead): enable -D warnings once stubs are implemented, i.e. change the command to
-      #   cargo clippy --all-targets --all-features -- -D warnings
-      # Until then warnings are reported (log + job summary) but do not fail the job.
-      - name: cargo clippy (warnings reported, not fatal yet)
-        run: |
-          set -o pipefail
-          cargo clippy --all-targets --all-features 2>&1 | tee clippy.log
-          n=$(sed 's/\x1b\[[0-9;]*m//g' clippy.log | grep -E '^warning: ' | grep -vcE 'generated [0-9]+ warning' || true)
-          echo "::notice title=clippy::${n} clippy warning lines (not fatal yet)"
-          echo "clippy: **${n}** warning lines (not fatal yet, see TODO in ci.yml)" >> "$GITHUB_STEP_SUMMARY"
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   check:
     name: check (${{ matrix.target }}, ${{ matrix.features }})
@@ -143,23 +134,9 @@ jobs:
           # job asserts nothing: it selects whatever the runner hardware supports.
           if [ "$MATRIX_BACKEND" != auto ]; then export ROARING128_EXPECT_BACKEND="$MATRIX_BACKEND"; fi
           cargo test --lib simd
-      # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
-      - name: cargo test --all-features --no-fail-fast (non-blocking for now)
-        id: full
-        continue-on-error: true
+      - name: cargo test --all-features --no-fail-fast
         timeout-minutes: 15
-        # No backtraces here: while stubs panic, proptest shrinking panics thousands of times and
-        # RUST_BACKTRACE=1 turned that into ~0.5 GB of captured output and job timeouts.
-        env:
-          RUST_BACKTRACE: 0
         run: cargo test --all-features --no-fail-fast
-      - name: Report non-blocking results
-        if: always()
-        run: |
-          echo "full test suite: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.full.outcome }}" != "success" ]; then
-            echo "::warning title=full test suite (non-blocking)::cargo test --all-features: ${{ steps.full.outcome }}"
-          fi
 
   test-avx512-sde:
     name: test-avx512-sde (sde -${{ matrix.cpu }})
@@ -217,24 +194,10 @@ jobs:
         env:
           ROARING128_EXPECT_BACKEND: avx512
         run: cargo test --lib simd
-      # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
       # Doctests are skipped: they are not run through the SDE runner.
-      - name: cargo test --all-features --lib --tests --no-fail-fast under sde -${{ matrix.cpu }} (non-blocking for now)
-        id: full
-        continue-on-error: true
+      - name: cargo test --all-features --lib --tests --no-fail-fast under sde -${{ matrix.cpu }}
         timeout-minutes: 25
-        # No backtraces here: while stubs panic, proptest shrinking panics thousands of times and
-        # RUST_BACKTRACE=1 turned that into ~0.5 GB of captured output and job timeouts.
-        env:
-          RUST_BACKTRACE: 0
         run: cargo test --all-features --lib --tests --no-fail-fast
-      - name: Report non-blocking results
-        if: always()
-        run: |
-          echo "full test suite under sde -${{ matrix.cpu }}: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.full.outcome }}" != "success" ]; then
-            echo "::warning title=full test suite under SDE (non-blocking)::sde -${{ matrix.cpu }}: ${{ steps.full.outcome }}"
-          fi
 
   test-aarch64:
     name: test-aarch64 (${{ matrix.os }})
@@ -277,27 +240,9 @@ jobs:
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
-      # TODO(lead): drop continue-on-error once the todo!() stubs are implemented.
-      - name: cargo test --all-features --no-fail-fast (non-blocking for now)
-        id: full
-        continue-on-error: true
+      - name: cargo test --all-features --no-fail-fast
         timeout-minutes: 15
-        # No backtraces here: while stubs panic, proptest shrinking panics thousands of times and
-        # RUST_BACKTRACE=1 turned that into ~0.5 GB of captured output and job timeouts.
-        env:
-          RUST_BACKTRACE: 0
         run: cargo test --all-features --no-fail-fast
-      - name: Report non-blocking results
-        if: always()
-        run: |
-          echo "kernel timings: ${{ steps.timings.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "full test suite: ${{ steps.full.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.timings.outcome }}" != "success" ]; then
-            echo "::warning title=kernel timings (non-blocking)::kernel_timings: ${{ steps.timings.outcome }}"
-          fi
-          if [ "${{ steps.full.outcome }}" != "success" ]; then
-            echo "::warning title=full test suite (non-blocking)::cargo test --all-features: ${{ steps.full.outcome }}"
-          fi
 
   miri:
     name: miri
