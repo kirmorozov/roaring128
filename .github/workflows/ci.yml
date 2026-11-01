@@ -255,15 +255,5 @@ jobs:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
       - run: cargo miri setup
-      # TODO(lead): drop continue-on-error once the container code is implemented.
-      - name: cargo miri test --lib container (non-blocking for now)
-        id: miri
-        continue-on-error: true
+      - name: cargo miri test --lib container
         run: cargo miri test --lib container
-      - name: Report non-blocking results
-        if: always()
-        run: |
-          echo "miri: ${{ steps.miri.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.miri.outcome }}" != "success" ]; then
-            echo "::warning title=miri (non-blocking)::cargo miri test --lib container: ${{ steps.miri.outcome }}"
-          fi
