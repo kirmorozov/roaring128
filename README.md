@@ -8,8 +8,9 @@ in a Roaring bitmap directly, with exact set semantics and the usual Roaring set
 mirrors the [`roaring`](https://docs.rs/roaring) crate, and the container kernels are written for
 AVX2, AVX-512 and NEON, selected at runtime.
 
-> **Status:** early development. The public API and its documentation are in place; the
-> implementation is landing now. Not on crates.io yet, not ready for production use.
+> **Status:** early development. The public API, the implementation (containers, SIMD kernels,
+> serialization, test suites) and the benchmark harness are in place. Not on crates.io yet, not
+> ready for production use.
 
 ## Why
 
@@ -284,17 +285,19 @@ Minimum supported Rust version: 1.91 (edition 2024).
 
 ## Benchmarks
 
-Not published yet. Measured comparisons against a wrapped-roaring64 baseline
-(`BTreeMap<u64, RoaringTreemap>`), `BTreeSet<u128>`, and `roaring::RoaringTreemap` (for data that
-fits in `u64`) are in progress in [`benches/`](benches/).
+Results are not published yet; the first full run is in progress. The harness lives in
+[`benches/`](benches/README.md): it times `RoaringBitmap128` against a wrapped-roaring64 baseline
+(`BTreeMap<u64, RoaringTreemap>`), `BTreeSet<u128>`, a sorted `Vec<u128>`, `HashSet<u128>`
+(default and FxHash) and `roaring::RoaringTreemap` (for data that fits in `u64`) across 10k–1M
+value UUID and dense workloads, and prints wins *and* losses in `report.md`.
 
 ## Status and roadmap
 
 - [x] Public API, documentation, serialization format
 - [x] SIMD dispatch, scalar reference kernels, CI (x86_64, AVX-512 under SDE, ARM64, Miri)
-- [ ] Container and bitmap implementation (in progress)
-- [ ] Specialized AVX2 / AVX-512 / NEON kernels
-- [ ] Benchmarks
+- [x] Container and bitmap implementation
+- [x] Specialized AVX2 / AVX-512 / NEON kernels
+- [ ] Benchmarks (harness in [`benches/`](benches/); first full run in progress)
 - [ ] First release on crates.io
 
 ## License
