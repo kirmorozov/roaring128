@@ -105,6 +105,9 @@ For stable numbers use an otherwise idle machine on AC power with a fixed freque
 
 ## The results directory
 
+A run's results directory is scratch: results worth keeping are copied to
+[`docs/benchmarks/`](../docs/benchmarks/), one directory per run.
+
 | file | content |
 |---|---|
 | `meta.txt` | date, command, commit SHA (and whether the tree was dirty, with the modified files), branch, `rustc -vV`, cargo, `RUSTFLAGS`, OS, CPU model, online CPUs, SIMD CPU flags (`avx2`, `avx512*`, `asimd` / `sve`, ...), the backend roaring128 selected and the backends the CPU supports, governor / EPP / boost, load average at the start, memory, the settings and seed, and the implementation order of every run |

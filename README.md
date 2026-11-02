@@ -349,30 +349,65 @@ Minimum supported Rust version: 1.91 (edition 2024).
 The harness lives in [`benches/`](benches/README.md): it times `RoaringBitmap128` against a
 wrapped-roaring64 baseline (`BTreeMap<u64, RoaringTreemap>`), `BTreeSet<u128>`, a sorted
 `Vec<u128>`, `HashSet<u128>` (default and FxHash) and `roaring::RoaringTreemap` (for data that
-fits in `u64`) across 10k–1M value UUID and dense workloads, and prints wins *and* losses in
-`report.md`. The first full run is done (main at `46cbf87`, 2026-11-01; AMD Ryzen 7 5825U, rustc
-1.99.1, AVX2 backend; full report in `target/bench-results/latest/`). Headline: geometric-mean
-speedup vs each baseline family, with wins/ties/losses where the confidence intervals do not
-overlap:
+fits in `u64`) across 10k–1M value UUID and dense workloads, and reports wins *and* losses.
+
+### What wins when
+
+No structure wins everywhere. From the first (provisional, see below) run, the fastest
+implementation for each kind of data and operation:
+
+| data, operations | fastest in this run | roaring128 |
+|---|---|---|
+| **Clustered IDs** (sequences or ranges under a shared prefix): set operations `&` `\|` `-` `^`, `intersection_len`, `is_subset`, 16-way union / intersection | **roaring128** on most, up to 7x ahead of the next best on two-way operations and 240–545x on 16-way ones; wrapped64 is 1.1–1.3x faster on run containers (`\|` and the assigning forms) | fastest |
+| Clustered IDs: memory | roaring128 and wrapped64 alike, 0.2–2.3 bytes/value | 7x to over 100x smaller than a sorted `Vec` (16 B/value), `BTreeSet` (18–27) or `HashSet` (36) |
+| Clustered IDs: `insert`, `contains`, `remove` | FxHash `HashSet` (wrapped64 for some inserts) | 1.1–19x slower |
+| Clustered IDs: range scans | sorted `Vec` | 18–34x slower |
+| **u64 values** (against `RoaringTreemap` only) | **roaring128** on set operations (1.4–9.9x), iteration (4.8–16x), `from_sorted` (1.4–5.9x), rank / select | `RoaringTreemap` is 1.1–1.6x faster on `contains`, 1.2x on `insert`, 1.3x on `from_iter`, 1.5–1.7x on 16-way operations over dense runs |
+| **Random UUIDs** (v4, v7), a set that changes and needs set algebra | `BTreeSet<u128>` on most operations: up to 2.7x faster on two-way set operations (about even on a few), 1.2–1.3x on `insert`, about 1.1x on `contains`; smaller too (18–27 against 34–51 B/value) | 1.2–13x faster than wrapped roaring64 on set operations and 5–15x smaller; ahead of `BTreeSet` on some assigning operations (up to 5.3x) |
+| Random UUIDs built once from sorted input, then queried | sorted `Vec<u128>`: set operations 4–16x faster, 16 B/value | slower |
+| Export / import, clustered IDs | **roaring128** (wrapped64 1.1–1.2x faster on run containers) | 16x to over 1000x faster than writing or reading a sorted `Vec`, at 0.2–2 serialized bytes/value against 16 |
+| Export / import, random UUIDs | a sorted `Vec<u128>` written as a raw 16-byte array: about 27–29x faster to write and 20x faster to read, 16 bytes/value | 18 bytes/value; the format is roaring128's own, no other library reads it yet |
+| Membership only (`insert` / `contains` / `remove`) | FxHash `HashSet<u128>` | 4–55x slower on random UUIDs |
+| `rank` / `select` on random UUIDs | sorted `Vec` (binary search, index) | far slower: the cost grows with the number of containers, one per sparse value |
+| Mixed (half dense, half random) | sorted `Vec` | 1.8–4.4x slower on set operations; 1.4–3.2x faster than `BTreeSet` and 2.5–5.3x faster than wrapped64 on them |
+
+In short: `roaring128` is the fastest structure here for set algebra on clustered or dense
+128-bit IDs, and it beats the other Roaring-based way to hold UUIDs (wrapped roaring64) on almost
+everything. For random UUIDs a plain `BTreeSet<u128>`, a sorted `Vec<u128>` or a hash set is
+faster for the job it fits; [When to use it](#when-to-use-it) says which. The full
+per-operation matrix is in
+[what-wins.md](docs/benchmarks/2026-11-01-ryzen7-5825u/what-wins.md).
+
+### The run (2026-11-01): provisional
+
+- **Hardware:** AMD Ryzen 7 5825U laptop (Zen 3), so only the **AVX2** backend was measured.
+  There are no AVX-512 or NEON timings yet (CI runs the AVX-512 path under an emulator, which
+  says nothing about speed).
+- **Conditions:** `powersave` governor, no core pinning, load average 5–6 from other jobs on
+  the host. One run (`repeat=1`) of 30 samples × 3 s per benchmark, so run-to-run variance was
+  not measured; small differences may not reproduce.
+- **Incomplete:** the wrapped64 `setops` process was killed (SIGKILL, 1.5 GiB peak RSS) when it
+  reached `multi_union16/uuid_v4_16x100k`, so the 16-way operations have no wrapped64 numbers.
+- **Build:** main at `46cbf87`, rustc 1.99.1, `--all-features`, system allocator.
+- **Full results:** every timing and every loss in
+  [report.md](docs/benchmarks/2026-11-01-ryzen7-5825u/report.md), the memory table in
+  [memory.md](docs/benchmarks/2026-11-01-ryzen7-5825u/memory.md), run metadata in
+  [meta.txt](docs/benchmarks/2026-11-01-ryzen7-5825u/meta.txt).
+
+Geometric-mean speedup of `RoaringBitmap128` over all workloads (> 1: faster), with wins / ties /
+losses counted where the confidence intervals do not overlap. By-construction results (`len`,
+`rank`, `select` against baselines that sum cardinalities) are excluded:
 
 | vs | geometric mean | wins / ties / losses |
 |---|---:|---:|
 | wrapped64 | 2.37x | 117 / 0 / 25 |
-| `RoaringTreemap` | 2.05x | 29 / 0 / 12 |
+| `RoaringTreemap` (u64 data) | 2.05x | 29 / 0 / 12 |
 | best ordered (`BTreeSet`, sorted `Vec`) | 1.16x | 51 / 2 / 95 |
 | best hash (`HashSet`, FxHash) | 0.22x | 8 / 0 / 39 |
 
-Highlights:
-- Bulk set operations: `and` 2.5x, `or` 3.4x, `sub` 4.1x, `xor` 3.7x vs wrapped64; per-op
-  geometric means of 1.6–14x vs the best ordered baseline, and `multi_union16` 546x faster than a
-  sorted `Vec` on dense runs.
-- Memory: 34–51 heap bytes/value on the sparse 1M-value UUID workloads (522–539 for wrapped64 on
-  uuid_v4, 265–269 on uuid_v7); the closest ordered baselines are 16 B/v (sorted `Vec`) and
-  18–27 B/v (`BTreeSet`), and on dense workloads everything drops to ~0.2 B/v.
-- Iteration and ranges: 8.7x / 7.8x geometric mean vs wrapped64 (`iter` up to 16x on dense).
-- Losses: FxHash `HashSet` is up to ~50x faster on `contains` for 1M UUIDs, a pre-sorted `Vec` is
-  30–50x faster on `from_sorted`, and sorted `Vec` wins most 1M-value UUID set operations — that
-  is the 0.22x vs best hash above.
+Still to do before these numbers count: repeated runs on a quiet machine with a fixed governor
+and pinned cores, an AVX-512 machine (Zen 4 or Sapphire Rapids), an AArch64 machine for NEON,
+and a wrapped64 `setops` run that is not killed.
 
 ## Status and roadmap
 
@@ -380,7 +415,8 @@ Highlights:
 - [x] SIMD dispatch, scalar reference kernels, CI (x86_64, AVX-512 under SDE, ARM64, Miri)
 - [x] Container and bitmap implementation
 - [x] Specialized AVX2 / AVX-512 / NEON kernels
-- [x] Benchmarks (harness in [`benches/`](benches/); first full run published above)
+- [x] Benchmark harness ([`benches/`](benches/README.md)); first, provisional run published above
+- [ ] Benchmarks on a quiet machine: repeated runs, AVX-512 (Zen 4 / Sapphire Rapids) and NEON hardware, wrapped64 setops without the memory kill
 - [ ] GPU benchmark comparison: RoaringBitmap128 (AVX2/AVX-512 CPU path) vs GPU-accelerated 128-bit sets (e.g. a DGX Spark / CUDA baseline such as a cuCollections-style bitmap or a GPU roaring implementation), to settle whether the GPU path beats the CPU kernels
 - [ ] First release on crates.io
 

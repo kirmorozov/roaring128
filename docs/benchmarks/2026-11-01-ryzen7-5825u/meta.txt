@@ -1,0 +1,26 @@
+date: 2026-11-01T15:26:48Z
+command: benches/run.sh all
+commit: 46cbf8724d2b338b1051e2ba3660ce02cbff5898 (dirty: no)
+branch: main
+rustc -vV:
+  rustc 1.99.1 (58cf8f9c3 2026-10-13)
+  binary: rustc
+  commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67
+  commit-date: 2026-10-13
+  host: x86_64-unknown-linux-gnu
+  release: 1.99.1
+  LLVM version: 23.1.1
+cargo: cargo 1.99.1 (5f94df478 2026-08-27)
+RUSTFLAGS: <unset>
+os: Linux 6.12.99-production+truenas x86_64
+cpu: AMD Ryzen 7 5825U with Radeon Graphics
+cpus online: 16
+cpu simd flags: abm avx avx2 bmi1 bmi2 fma popcnt sse4_2 
+roaring128 backend: avx2 (arch x86_64, supported: avx2=yes avx512=no neon=no)
+governor: powersave, epp: performance, boost: 1
+load average at start: 5.68 6.20 5.22
+memory: 62.2 GiB total, 10.9 GiB available
+settings: warmup=1s measure=3s samples=30 repeat=1 seed=949073077 pin=none features=--all-features skip_check=0
+process per implementation: yes (BENCH_IMPL=<name> per process, order below)
+order run 1 ops: treemap roaring128 hashset btreeset sortedvec hashset_fx wrapped64
+order run 1 setops: treemap wrapped64 btreeset roaring128 sortedvec
