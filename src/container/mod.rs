@@ -934,7 +934,7 @@ impl Container {
     }
 
     // -----------------------------------------------------------------------------------------
-    // Serialization support (see `FORMAT.md`)
+    // Serialization support (see `docs/FORMAT.md`)
     // -----------------------------------------------------------------------------------------
 
     /// The low 16 bits of the serialized descriptor: `cardinality - 1` for arrays and bitmaps,
@@ -959,7 +959,7 @@ impl Container {
         }
     }
 
-    /// Appends the little-endian payload (see `FORMAT.md`) to `out`.
+    /// Appends the little-endian payload (see `docs/FORMAT.md`) to `out`.
     pub(crate) fn write_payload(&self, out: &mut Vec<u8>) {
         match self {
             Container::Array(a) => {

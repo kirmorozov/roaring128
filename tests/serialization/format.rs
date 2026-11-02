@@ -1,4 +1,4 @@
-//! Conformance with `FORMAT.md`: exact bytes against the reference encoder of `raw.rs`, sizes,
+//! Conformance with `docs/FORMAT.md`: exact bytes against the reference encoder of `raw.rs`, sizes,
 //! and decoding of hand-written valid inputs (including non-canonical ones the format allows).
 
 use proptest::prelude::*;
@@ -180,7 +180,7 @@ fn hand_written_valid_inputs() {
 
 #[test]
 fn run_bitset_without_runs_is_accepted() {
-    // FORMAT.md: flags bit 0 means "a run-container bitset follows"; an all-zero bitset is
+    // docs/FORMAT.md: flags bit 0 means "a run-container bitset follows"; an all-zero bitset is
     // well formed.
     let raw = Raw {
         flags: Some(1),

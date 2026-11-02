@@ -1,4 +1,4 @@
-//! Serialization tests (`FORMAT.md`): round trips, `serialized_size`, exact bytes against an
+//! Serialization tests (`docs/FORMAT.md`): round trips, `serialized_size`, exact bytes against an
 //! independent reference encoder, decoding of hand-written inputs, rejection of corrupted input,
 //! `deserialize_unchecked_from`, `intersection_with_serialized_unchecked` and serde.
 //!

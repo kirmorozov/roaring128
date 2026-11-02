@@ -1,4 +1,4 @@
-//! The native serialization format, see `FORMAT.md`.
+//! The native serialization format, see `docs/FORMAT.md`.
 //!
 //! Writing goes through one reusable buffer flushed in [`WRITE_CHUNK`] pieces, so unbuffered
 //! writers see few large writes. Reading validates the header, the key order and (for
@@ -209,7 +209,7 @@ fn flush_if_full<W: io::Write>(writer: &mut W, buf: &mut Vec<u8>) -> io::Result<
 }
 
 impl RoaringBitmap128 {
-    /// Return the size in bytes of the serialized output (see `FORMAT.md`).
+    /// Return the size in bytes of the serialized output (see `docs/FORMAT.md`).
     ///
     /// # Examples
     ///
@@ -238,7 +238,7 @@ impl RoaringBitmap128 {
         HEADER_BYTES + run_bitset + n * DESCRIPTOR_BYTES + payloads
     }
 
-    /// Serialize this bitmap into the native 128-bit Roaring format described in `FORMAT.md`.
+    /// Serialize this bitmap into the native 128-bit Roaring format described in `docs/FORMAT.md`.
     ///
     /// # Examples
     ///

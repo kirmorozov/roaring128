@@ -1,4 +1,4 @@
-//! An independent writer for the format of `FORMAT.md`, able to produce invalid input.
+//! An independent writer for the format of `docs/FORMAT.md`, able to produce invalid input.
 
 #![allow(dead_code)]
 

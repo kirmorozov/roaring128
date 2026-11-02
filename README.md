@@ -157,7 +157,7 @@ container of its own. The design keeps that sparse case cheap instead:
 - In memory, a sparse value costs one 16-byte key and one 16-byte container slot in the B-tree
   (plus the amortized B-tree node overhead), with no per-value heap allocation.
 - Serialized, a sparse value costs 18 bytes (a 16-byte descriptor and a 2-byte payload), plus a
-  16-byte header for the whole bitmap. See [FORMAT.md](FORMAT.md).
+  16-byte header for the whole bitmap. See [FORMAT.md](docs/FORMAT.md).
 
 Compression applies when the low bits of 128-bit IDs are sequential or dense: a tenant or shard
 prefix with a sequence (`(prefix << 64) | seq`), snowflake-style IDs under a prefix, custom UUIDv8
@@ -245,8 +245,8 @@ Deviations:
 
 There is no standard Roaring format for 128-bit values, so `roaring128` defines one, kept as close
 as possible to the 32-bit [Roaring format specification](https://github.com/RoaringBitmap/RoaringFormatSpec).
-It is specified in [FORMAT.md](FORMAT.md): a 16-byte header, an optional run-container bitset, one
-16-byte descriptor per container (key and cardinality), then the container payloads. Every
+It is specified in [FORMAT.md](docs/FORMAT.md): a 16-byte header, an optional run-container bitset,
+one 16-byte descriptor per container (key and cardinality), then the container payloads. Every
 container's offset is computable from the header, with no offset table, which keeps sparse data at
 18 bytes per value and lets `intersection_with_serialized_unchecked` read only the containers
 whose keys are present in the other operand.

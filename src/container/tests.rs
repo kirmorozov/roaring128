@@ -901,7 +901,7 @@ fn from_lsb0_bytes_out_of_bounds() {
     Container::from_lsb0_bytes(&[1; 10], 8183);
 }
 
-/// Decodes a payload written by `write_payload` according to `FORMAT.md`.
+/// Decodes a payload written by `write_payload` according to `docs/FORMAT.md`.
 fn decode_payload(kind: Kind, descriptor: u16, bytes: &[u8]) -> Vec<u16> {
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
     match kind {

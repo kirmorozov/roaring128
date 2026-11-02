@@ -1,6 +1,6 @@
 //! Deserialization of inputs announcing far more containers than they contain.
 //!
-//! `FORMAT.md`: `deserialize_from` "never allocates more than the input actually provides". A
+//! `docs/FORMAT.md`: `deserialize_from` "never allocates more than the input actually provides". A
 //! counting global allocator records the largest single allocation and the peak of live heap
 //! memory while deserializing; both must stay proportional to the input length (plus a constant
 //! for one container payload). Counts are tried in increasing order so that an implementation
