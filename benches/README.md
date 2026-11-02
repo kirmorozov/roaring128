@@ -92,8 +92,7 @@ How the run is set up:
 - Before timing anything, each process checks its implementation against a sorted-slice
   reference on small instances of every workload shape: lookups, iteration, ranges, rank /
   select, removals, serialization round trips, every set operation (also on run containers) and
-  the 16-way operations. A wrong result aborts the run. While roaring128 is still unimplemented,
-  this check reports that, and `run.sh baselines` runs everything else.
+  the 16-way operations. A wrong result aborts the run.
 - The structures a benchmark queries are built untimed. Build results are dropped outside the
   timed region, and only one implementation's structures are alive at a time.
 
@@ -151,7 +150,7 @@ median, p90 and maximum spread, with the least stable benchmarks. A processes ta
 time and peak RSS.
 
 `report.py --subject <id>` puts another implementation in roaring128's place. This is useful for
-checking the harness while roaring128 is not implemented yet, e.g. `--subject btreeset`.
+comparing the baselines against each other, e.g. `--subject btreeset`.
 
 ## Without run.sh
 

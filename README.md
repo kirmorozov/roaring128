@@ -58,7 +58,43 @@ per value:
 
 For dense data both designs end up with the same Roaring containers; the remaining differences are
 the single-level index and the SIMD container kernels. See [Benchmarks](#benchmarks) for the
-measurements in progress.
+measurements.
+
+## When to use it
+
+`roaring128` is a good fit when:
+
+- **Your 128-bit IDs cluster:** a shared prefix with a sequence or counter in the low bits (a
+  tenant or shard with a sequence, snowflake-style IDs under a prefix, UUIDv8 layouts with a
+  counter), or ranges added with `insert_range`. Set operations were the fastest of everything
+  measured in most cases, and memory and serialized size drop to 0.2–2.3 bytes per value against
+  16 or more for a `Vec`, `BTreeSet` or `HashSet` of `u128`.
+- **You need set algebra on 128-bit sets:** union, intersection, difference and symmetric
+  difference, their cardinality-only forms and many-way versions, on clustered or mixed data.
+- **You would otherwise wrap roaring64** (`BTreeMap<u64, RoaringTreemap>`): even on random UUIDs
+  `roaring128` is 1.2–13x faster on set operations and 5–15x smaller.
+- **Your code already uses the `roaring` crate** and needs 128-bit values: the API mirrors
+  `RoaringTreemap`.
+- **Your data is partly clustered and partly random and changes over time:** on mixed data
+  `roaring128` beat `BTreeSet` (1.4–3.2x) and wrapped roaring64 (2.5–5.3x) on set operations;
+  only a static sorted `Vec` was faster.
+
+Something else fits better when:
+
+- **The IDs are random UUIDs** (v4, or v7: with 62 random low bits, two of them practically never
+  share a container) and the set changes over time: `BTreeSet<u128>` was faster on most
+  operations and smaller (18–27 against 34–51 bytes per value), because every random UUID lands
+  in a container of its own and Roaring compression has nothing to work with.
+- **The set is built once and then only read:** a sorted `Vec<u128>` had 4–16x faster set
+  operations, binary-search `rank` / `select`, and 16 bytes per value.
+- **You only need membership** (`insert`, `contains`, `remove`): a hash set, such as
+  `HashSet<u128>` with FxHash, was 4–55x faster on random UUIDs.
+- **You exchange the data with other languages or tools:** the serialization format is
+  `roaring128`'s own and nothing else reads it yet. A sorted array of 16-byte values is readable
+  everywhere and was 20–29x faster to write and read for random UUIDs.
+
+The numbers come from a first, provisional benchmark run; see [Benchmarks](#benchmarks) for the
+conditions and the full what-wins-when table.
 
 ## Quick start
 
@@ -145,14 +181,19 @@ RoaringBitmap128
 - A container is exactly 16 bytes, so the B-tree stays dense. Arrays of up to 7 values are stored
   inline in that slot; only larger arrays, run lists and bitmaps allocate.
 - Set operations are a single merge over the sorted keys of both bitmaps, with one container
-  operation per common key. The container operations (array merges, bitmap and/or/xor/andnot,
-  popcounts, bitmap-to-array conversion, run counting) run on vectorized kernels.
+  operation per common key; when one side has far fewer containers than the other, its keys are
+  looked up in the other side instead. The container operations (array merges, bitmap
+  and/or/xor/andnot, popcounts, bitmap-to-array conversion, run counting) run on vectorized
+  kernels.
 
 ### Compression: what to expect
 
 Random UUIDs don't compress like dense integers. A v4 UUID has 122 random bits and a v7 UUID has
 62 random low bits, so two of them essentially never share a 112-bit key: every UUID lands in a
-container of its own. The design keeps that sparse case cheap instead:
+container of its own. The design keeps that sparse case cheap within the Roaring family: on
+random UUIDs `roaring128` uses 34–51 heap bytes and 18 serialized bytes per value, against
+265–539 for wrapped roaring64 — though a `BTreeSet<u128>` (18–27) or a sorted `Vec<u128>` (16)
+is smaller still, and faster where it fits ([When to use it](#when-to-use-it)):
 
 - In memory, a sparse value costs one 16-byte key and one 16-byte container slot in the B-tree
   (plus the amortized B-tree node overhead), with no per-value heap allocation.
@@ -194,14 +235,15 @@ let ids: Vec<Uuid> = events.range(v7_window(t0, t1)).map(Uuid::from_u128).collec
 - With `std` (the default) the backend is detected at runtime, once, so a single binary uses
   AVX-512 where it exists and AVX2 elsewhere. CPUs with AVX-512 but without VPOPCNTDQ, BITALG and
   VBMI2 (Skylake-SP, Cascade Lake) use the AVX2 path.
-- On an x86_64 CPU without AVX2 the first use of a bitmap panics with a message naming the
-  requirement.
+- On an x86_64 CPU without AVX2, roaring128 panics with a message naming the requirement as soon
+  as it selects a backend: on the first operation that needs a vector kernel, or on a call to
+  `simd_backend()`.
 - Without `std` the backend is fixed at compile time from the enabled target features: build with
   at least `-C target-cpu=x86-64-v3`. The AVX-512 path additionally needs VPOPCNTDQ, BITALG and
   VBMI2 (for example `-C target-cpu=icelake-server` or `znver4`; `x86-64-v4` alone does not
   include them).
 
-`roaring128::simd_backend()` reports the selected backend. The environment variable
+`roaring128::simd_backend()` reports the selected backend. With `std`, the environment variable
 `ROARING128_FORCE_BACKEND=avx2|avx512|neon` downgrades the selection for testing; requests for a
 backend the CPU doesn't support are ignored.
 
@@ -276,12 +318,31 @@ Minimum supported Rust version: 1.91 (edition 2024).
 
 - Every SIMD kernel is differentially tested against a scalar reference implementation, with
   guard zones that catch out-of-bounds writes.
+- Unit tests inside the crate check every container operation, for every pair of representations
+  (inline array, heap array, bitmap, run), against a `BTreeSet<u16>` model and the container
+  invariants, with the `roaring` crate as the oracle for representation choices and serialized
+  sizes; the top-level bitmap has its own unit tests (key boundaries, the strategy choices of the
+  set operations, iterator seeks), checked against a `BTreeSet<u128>` model.
+- Model-based property tests (`tests/model/`) compare every public method of `RoaringBitmap128`
+  with a `BTreeSet<u128>` model on structured sets (array clusters, dense bitmap blocks, runs
+  spanning several keys, sparse UUID-like values, values around 2^32, 2^64, 2^112 and
+  `u128::MAX`), and check the bitmap's internal invariants after every mutation.
+- Differential tests against the `roaring` crate (`tests/vs_roaring.rs`): the same calls on
+  `RoaringTreemap` (`u64` inputs) or `RoaringBitmap` (`u32` inputs) must give the same return
+  values and the same contents, and in the `repr` tests the same container representations.
+- The test suite of `roaring` 0.11.5, ported to `u128` (`tests/port/`): its `RoaringBitmap` and
+  `RoaringTreemap` tests and its in-source unit and property tests, many also run at 128-bit
+  offsets (around 2^32, 2^64, 2^100, 2^112 and near `u128::MAX`).
+- Serialization tests (`tests/serialization/`): round trips, exact bytes against an independent
+  reference encoder, hand-written and corrupted inputs, the unchecked readers, serde, and the
+  ported serialization tests of `roaring`; a separate binary (`tests/serialization_limits.rs`)
+  checks that inputs announcing more containers than they hold keep the allocations of
+  `deserialize_from` proportional to the input.
+- Smaller test targets cover the `uuid` feature and report the selected SIMD backend.
 - CI runs the AVX2 path natively, the AVX-512 path under the Intel Software Development Emulator
   (Ice Lake and Sapphire Rapids), and NEON natively on Linux ARM64 and Apple Silicon. Under the
   emulator it also checks that a Haswell CPU selects AVX2 and that a pre-AVX2 CPU panics.
 - Container code runs under Miri.
-- Landing with the implementation: model-based tests against `BTreeSet<u128>`, differential tests
-  against the `roaring` crate, and the `RoaringTreemap` test suite ported to `u128`.
 
 ## Benchmarks
 
