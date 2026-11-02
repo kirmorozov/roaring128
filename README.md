@@ -320,6 +320,7 @@ Highlights:
 - [x] Container and bitmap implementation
 - [x] Specialized AVX2 / AVX-512 / NEON kernels
 - [x] Benchmarks (harness in [`benches/`](benches/); first full run published above)
+- [ ] GPU benchmark comparison: RoaringBitmap128 (AVX2/AVX-512 CPU path) vs GPU-accelerated 128-bit sets (e.g. a DGX Spark / CUDA baseline such as a cuCollections-style bitmap or a GPU roaring implementation), to settle whether the GPU path beats the CPU kernels
 - [ ] First release on crates.io
 
 ## License
