@@ -29,6 +29,12 @@ rustc-ice-*.txt
 # Claude Code agent worktrees and local settings - never commit
 /.claude/
 
+# Agent scratch in the shared checkout (scripts in ./tmp, outputs in ./tmp/out) - never commit
+/tmp/
+
+# Python bytecode caches (benches/ harness)
+__pycache__/
+
 # Downloaded tools / emulators (Intel SDE, cross, qemu) and archives - never commit
 /.sde
 /.cross
