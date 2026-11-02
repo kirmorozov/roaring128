@@ -12,7 +12,11 @@ categories = ["data-structures", "compression"]
 
 [features]
 default = ["std"]
-# Runtime CPU feature detection, `std::io` based serialization and `std::error::Error` impls.
+# Runtime CPU feature detection (and the `ROARING128_FORCE_BACKEND` override) and the
+# `std::io` based serialization (`serialize_into`, `deserialize_from`,
+# `intersection_with_serialized_unchecked`, ...). Without it the crate is `no_std` + `alloc` and
+# the SIMD backend is fixed at compile time. The error types implement `core::error::Error` with
+# or without it.
 std = []
 serde = ["dep:serde", "std"]
 # Conversions between `uuid::Uuid` and the `u128` values stored in the bitmap.

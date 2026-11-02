@@ -3,7 +3,8 @@
 #
 #   benches/run.sh [all]                 ops + setops, every implementation in its own process (in a
 #                                        shuffled order per run), memory table, metadata, report
-#   benches/run.sh baselines             the same without roaring128 (works while it is todo!())
+#   benches/run.sh baselines             the same without roaring128 (the memory table still
+#                                        measures it)
 #   benches/run.sh ops|setops [ARGS...]  one criterion binary; ARGS go to criterion (a regex filter
 #                                        such as 'insert/.*/uuid_v4')
 #   benches/run.sh memory [WORKLOAD...]  memory table only (optional workload substrings)

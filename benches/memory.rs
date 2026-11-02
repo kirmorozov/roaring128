@@ -203,7 +203,8 @@ fn print_row(w: &Workload, name: &str, row: &Row) {
     );
 }
 
-/// roaring128 may still be `todo!()`: report instead of aborting the table.
+/// Reports a panic in the roaring128 measurement in the table instead of aborting the whole
+/// table.
 fn guarded(f: impl FnOnce() -> Row) -> Row {
     let hook = panic::take_hook();
     panic::set_hook(Box::new(|_| {}));

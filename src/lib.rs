@@ -12,7 +12,9 @@
 //!
 //! * `x86_64`: AVX2 + BMI1/BMI2 + POPCNT is the minimum (`x86-64-v3`: Intel Haswell / AMD Zen
 //!   or newer). AVX-512 F/BW/VL/DQ/VPOPCNTDQ/BITALG/VBMI2 (Intel Ice Lake, AMD Zen 4 and newer)
-//!   is used automatically when present. On a CPU without AVX2 the first use of a bitmap panics.
+//!   is used automatically when present. On a CPU without AVX2 the crate panics when it first
+//!   selects a backend: on the first operation that needs a vector kernel, or on a call to
+//!   [`simd_backend`].
 //! * `aarch64`: NEON.
 //! * Other architectures are rejected at compile time.
 //!

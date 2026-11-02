@@ -2,8 +2,8 @@
 //! compute the same results as a plain sorted-slice reference on small instances of every
 //! workload shape, otherwise the timings would compare different work. Checking each
 //! implementation against the same reference cross-checks them all, also when each runs in its
-//! own process. roaring128 is checked under `catch_unwind` so that the baseline benchmarks can
-//! run while its implementation is still `todo!()`.
+//! own process. roaring128 is checked under `catch_unwind`, so that a panic in it (for example
+//! `todo!()`) is reported in the self-check output instead of aborting the run.
 
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
@@ -371,8 +371,8 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 }
 
 /// Checks the selected baselines (a failure panics), then roaring128 if selected: a mismatch
-/// panics, an implementation that is not there yet (`todo!()`) is reported and its benchmarks
-/// will panic when they run.
+/// panics, a panic in the check itself (for example `todo!()`) is reported in the status
+/// instead of aborting the run.
 pub fn run_all() -> String {
     type Check = fn(&Fixtures) -> Res;
     let baselines: [(&str, Check); 6] = [

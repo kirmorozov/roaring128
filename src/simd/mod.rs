@@ -4,7 +4,8 @@
 //!
 //! * `x86_64`: AVX2 + BMI1/BMI2 + POPCNT is the minimum (Haswell / Zen 1 and newer, the
 //!   `x86-64-v3` level). AVX-512 F/BW/VL/DQ/VPOPCNTDQ/BITALG/VBMI2 (Ice Lake, Zen 4 and newer) is
-//!   used when present. Running on a CPU without AVX2 panics on first use of the bitmap.
+//!   used when present. On a CPU without AVX2 the backend selection panics; it runs lazily, on
+//!   the first operation that needs a vector kernel or on a call to [`simd_backend`].
 //! * `aarch64`: NEON (baseline on every AArch64 CPU).
 //! * Other architectures are rejected at compile time.
 //!
